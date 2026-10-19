@@ -39,7 +39,7 @@
     shake -= dt * 2.2f; if (shake < 0.0f) shake = 0.0f;
     gShakeX = std::sin(shake * 38.0f) * 11.0f * shake;
 
-    auto center_text = [&](const char* t, ImU32 col) {
+    auto lumin_center = [&](const char* t, ImU32 col) {
         float tw = ImGui::CalcTextSize(t).x;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - tw) * 0.5f);
         ImGui::PushStyleColor(ImGuiCol_Text, col);
@@ -217,11 +217,11 @@
                 okT += dt;
                 ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + innerH * 0.5f - 52.0f));
                 ImGui::PushFont(font_semibold);
-                center_text("Successfully!", ink);
+                lumin_center("Successfully!", ink);
                 ImGui::PopFont();
                 ImGui::Dummy(ImVec2(0, 8));
-                center_text("Now you can go back to the game and have fun!", soft);
-                center_text("This window will close automatically.", soft);
+                lumin_center("Now you can go back to the game and have fun!", soft);
+                lumin_center("This window will close automatically.", soft);
                 if (okT > 3.2f) stage = 1;     // demo: return to the menu instead of quitting
             }
 
