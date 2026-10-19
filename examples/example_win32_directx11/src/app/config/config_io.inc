@@ -26,9 +26,7 @@ static void LoadOrCreateConfig() {
         if (CfgReadFile(path, text)) CfgParse(g_cfg, text);
         return;
     }
-    std::string out = ExeDir() + "\\glass.cfg";
-    FILE* f = fopen(out.c_str(), "wb");
-    if (f) { std::string t = CfgDefaultText(); fwrite(t.data(), 1, t.size(), f); fclose(f); }
+    // single-exe build: defaults are built in, no glass.cfg is written next to the exe
 }
 static std::string CfgSavePathStr() {
     std::string p = CfgFindExisting();

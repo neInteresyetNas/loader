@@ -3,6 +3,7 @@
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
 #include "../../../data/fonts.h"
+#include "../../../data/fa_solid.h"
 #include "glass/backdrop.h"
 #include "glass/glass.h"
 #include "glass/surfaces.h"
@@ -244,14 +245,9 @@ int main(int, char**)
     IM_ASSERT(font_medium && font_semibold);
     io.FontDefault = font_medium;
     g_fontSemi = font_semibold;
-    std::string fa_solid_path  = AssetPath("data\\fa\\fa-solid-900.ttf",  nullptr);
-    ImFont* fa_solid = io.Fonts->AddFontFromFileTTF(fa_solid_path.c_str(), 32.0f);
+    ImFont* fa_solid = io.Fonts->AddFontFromMemoryTTF((void*)fa_solid_ttf, (int)sizeof(fa_solid_ttf), 32.0f, &font_cfg);
     if (fa_solid) Glass::SetIconFont(fa_solid);
-    std::string fa_brands_path = AssetPath("data\\fa\\fa-brands-400.ttf", nullptr);
-    ImFont* fa_brands = io.Fonts->AddFontFromFileTTF(fa_brands_path.c_str(), 32.0f);
-    if (fa_brands) Glass::SetIconFontBrands(fa_brands);
-    std::string hello_path = AssetPath("data\\Sacramento-Regular.ttf", nullptr);
-    ImFont* hello_font = io.Fonts->AddFontFromFileTTF(hello_path.c_str(), 150.0f);
+    ImFont* hello_font = nullptr;   // splash font removed (single-exe build, no external data)
     if (!g_glass_renderer.Init(g_pd3dDevice, g_pd3dDeviceContext)) {
         ::MessageBoxA(hwnd, "Glass renderer init failed (shader compile?)", "Error", MB_OK | MB_ICONERROR);
         return 1;
@@ -260,7 +256,6 @@ int main(int, char**)
     Glass::g_sfxTap = &RecorderTapSfx;
     g_backdrop.Init(g_pd3dDevice, g_pd3dDeviceContext, hwnd);
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    LoadPhotos(g_pd3dDevice);
     { char up[MAX_PATH] = {}; DWORD ul = ::GetEnvironmentVariableA("USERPROFILE", up, MAX_PATH);
       if (ul > 0 && ul < MAX_PATH) std::snprintf(g_rec_path, sizeof(g_rec_path), "%s\\glass_recording.mp4", up); }
 #include "app/ui_state.inc"

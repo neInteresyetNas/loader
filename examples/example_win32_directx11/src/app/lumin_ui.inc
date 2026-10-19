@@ -1,4 +1,4 @@
-// Lumin UI: intro -> license screen -> product menu -> success screen.
+// Lumin UI: license screen -> product menu -> success screen.
 // Included from main.cpp inside the frame loop (needs: scale, ent, authA, style, io, cw, ch, win_w, win_h,
 // font_medium, font_semibold, g_glass_renderer, hwnd, logged_in, gShakeX).
 //
@@ -24,8 +24,7 @@
     static float shake = 0.0f;
     static bool  busy = false; static float busyT = 0.0f;
     static float okT = 0.0f;
-    static int   lastStage = 0; static float subT = 1.0f;
-    static float introT = 0.0f; static bool introSfx = false;
+    static int   lastStage = 0; static float subT = 0.0f;   // starts at 0: the license card fades in on launch
     static float swapT = 1.0f;
     static bool  closing = false; static float closeT = 0.0f;
 
@@ -55,9 +54,6 @@
     subT += dt * 3.2f; if (subT > 1.0f) subT = 1.0f;
     const float subA = sm(subT);
 
-    if (introT < 3.6f) introT += dt;
-    if (!introSfx && introT > 1.05f) { introSfx = true; Glass::PlaySfx(Glass::Sfx::Charm); }
-    const float introGate = (stage == 0) ? sm((introT - 2.65f) / 0.75f) : 1.0f;
 
     if (sel != lastSel) { lastSel = sel; swapT = 0.0f; }
     swapT += dt * 2.6f; if (swapT > 1.0f) swapT = 1.0f;
@@ -77,115 +73,15 @@
     };
 
     // =========================================================================================
-    //  INTRO  (compass draws itself, needle swings in, LUMIN types in, loading hairline)
-    // =========================================================================================
-    if (stage == 0) {
-        const float sa = 1.0f - sm((introT - 2.75f) / 0.6f);
-        if (sa > 0.003f) {
-            ImDrawList* fd = ImGui::GetForegroundDrawList();
-            const float t = introT;
-            const float pcx = (float)cw * 0.5f, pcy = (float)ch * 0.5f;
-            const float W = 440.0f, H = 330.0f;
-            auto A = [&](ImU32 c, float a = 1.0f) {   // alpha for the splash only (not style.Alpha)
-                float al = (float)((c >> 24) & 0xFF) / 255.0f * a * sa;
-                al = sat01(al);
-                return (ImU32)((c & 0x00FFFFFF) | ((ImU32)(al * 255.0f + 0.5f) << 24));
-            };
-            const float panelIn = eo3(t / 0.45f);
-            fd->AddRectFilled(ImVec2(pcx - W * 0.5f, pcy - H * 0.5f), ImVec2(pcx + W * 0.5f, pcy + H * 0.5f),
-                              A(IM_COL32(10, 11, 15, 246), panelIn), 30.0f);
-            fd->AddRect(ImVec2(pcx - W * 0.5f, pcy - H * 0.5f), ImVec2(pcx + W * 0.5f, pcy + H * 0.5f),
-                        A(IM_COL32(255, 255, 255, 26), panelIn), 30.0f, 0, 1.0f);
-
-            const ImVec2 lc(pcx, pcy - 40.0f);
-            const float R = 40.0f;
-
-            // soft pulsing glow
-            {
-                float glowIn = sat01(t / 1.2f) * (0.82f + 0.18f * std::sin(t * 3.2f));
-                for (int k = 0; k < 7; ++k)
-                    fd->AddCircleFilled(lc, R + 6.0f + k * 9.0f, A(pink, 0.075f * (1.0f - k / 7.0f) * glowIn), 48);
-            }
-            // ripples
-            for (int i = 0; i < 2; ++i) {
-                float tt = (t - 0.15f - i * 0.38f) / 1.4f;
-                if (tt > 0.0f && tt < 1.0f)
-                    fd->AddCircle(lc, R * 0.7f + eo3(tt) * 120.0f, A(pink, (1.0f - tt) * 0.42f), 64, 1.6f);
-            }
-            // ring track + drawing ring
-            const float p = eo3((t - 0.1f) / 1.0f);
-            fd->AddCircle(lc, R, A(IM_COL32(255, 255, 255, 255), 0.11f), 96, 3.0f);
-            if (p > 0.004f) {
-                fd->PathArcTo(lc, R, -kPi * 0.5f, -kPi * 0.5f + 2.0f * kPi * p, 96);
-                fd->PathStroke(A(IM_COL32(255, 255, 255, 240)), 0, 3.2f);
-            }
-            // ticks following the ring
-            for (int i = 0; i < 12; ++i) {
-                float f = (float)i / 12.0f;
-                if (f > p) break;
-                float ang = -kPi * 0.5f + f * 2.0f * kPi;
-                bool major = (i % 3) == 0;
-                float r0 = R + 8.0f, r1 = R + (major ? 15.0f : 12.0f);
-                fd->AddLine(ImVec2(lc.x + std::cos(ang) * r0, lc.y + std::sin(ang) * r0),
-                            ImVec2(lc.x + std::cos(ang) * r1, lc.y + std::sin(ang) * r1),
-                            A(IM_COL32(255, 255, 255, 255), major ? 0.55f : 0.28f), 1.6f);
-            }
-            // needle: pops in, then swings with a damped overshoot
-            if (t > 0.7f) {
-                float u = t - 0.7f;
-                float s = eob(u / 0.5f);
-                float ang = (-kPi * 0.25f) + 2.7f * std::exp(-3.0f * u) * std::cos(9.5f * u);   // settles pointing NE
-                ImVec2 dir(std::sin(ang), -std::cos(ang));
-                ImVec2 per(-dir.y, dir.x);
-                float L = R * 0.66f * s, w = R * 0.15f * s;
-                ImVec2 tip(lc.x + dir.x * L, lc.y + dir.y * L), tail(lc.x - dir.x * L, lc.y - dir.y * L);
-                ImVec2 a(lc.x + per.x * w, lc.y + per.y * w), b(lc.x - per.x * w, lc.y - per.y * w);
-                fd->AddTriangleFilled(tip, a, b, A(IM_COL32(255, 255, 255, 255)));
-                fd->AddTriangleFilled(tail, a, b, A(pink));
-                fd->AddCircleFilled(lc, 3.4f * s, A(IM_COL32(10, 11, 15, 255)), 20);
-                fd->AddCircle(lc, 3.4f * s, A(IM_COL32(255, 255, 255, 255), 0.9f), 20, 1.2f);
-            }
-            // LUMIN, letter by letter
-            {
-                static const char* letters[5] = { "L", "U", "M", "I", "N" };
-                const float fs = 34.0f, spacing = 12.0f;
-                float wl[5], total = 0.0f;
-                for (int i = 0; i < 5; ++i) { wl[i] = font_semibold->CalcTextSizeA(fs, 99999.0f, 0.0f, letters[i]).x; total += wl[i]; }
-                total += spacing * 4.0f;
-                float x = pcx - total * 0.5f, y = pcy + 40.0f;
-                for (int i = 0; i < 5; ++i) {
-                    float e = eo3((t - 1.1f - i * 0.09f) / 0.5f);
-                    if (e > 0.003f)
-                        fd->AddText(font_semibold, fs, ImVec2(x, y + (1.0f - e) * 16.0f), A(IM_COL32(240, 241, 247, 255), e), letters[i]);
-                    x += wl[i] + spacing;
-                }
-            }
-            // loading hairline + caption
-            {
-                float bw = 170.0f, bx = pcx - bw * 0.5f, by = pcy + 108.0f;
-                float fin = eo3((t - 1.3f) / 0.4f);
-                float prog = eo3((t - 1.3f) / 1.4f);
-                fd->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + 3.0f), A(IM_COL32(255, 255, 255, 255), 0.10f * fin), 2.0f);
-                fd->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw * prog, by + 3.0f), A(pink, fin), 2.0f);
-                const char* cap = prog < 0.985f ? "Initializing" : "Ready";
-                ImVec2 ts = font_medium->CalcTextSizeA(14.0f, 99999.0f, 0.0f, cap);
-                fd->AddText(font_medium, 14.0f, ImVec2(pcx - ts.x * 0.5f, by + 12.0f), A(IM_COL32(150, 153, 168, 255), fin), cap);
-            }
-        }
-    }
-
-    // =========================================================================================
     //  LICENSE
     // =========================================================================================
     if (stage == 0) {
         if (Glass::BeginCard("license", Glass::Material::Regular, ImVec2(404.0f * scale, 0))) {
-            const float fade = authA * subA * introGate * closeA;
+            const float fade = authA * subA * closeA;
             g_glass_renderer.SetSubmitFade(fade);
             style.Alpha = ent * fade; if (style.Alpha > 1.0f) style.Alpha = 1.0f;
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const float cwid = ImGui::GetContentRegionAvail().x;
-            const float rise = (1.0f - introGate) * 22.0f;
-            ImGui::Dummy(ImVec2(0, rise));
 
             // header: badge + title
             {
@@ -262,7 +158,7 @@
             }
             ImGui::Dummy(ImVec2(0, 6));
 
-            if ((go || enter) && introGate > 0.9f) {
+            if (go || enter) {
                 if (_stricmp(licKey, kDemoKey) == 0) {
                     licErr = false; stage = 1; logged_in = true;
                     Glass::PlaySfx(Glass::Sfx::Success);
