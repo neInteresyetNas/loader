@@ -121,7 +121,7 @@ static std::string CfgDefaultText() {
 "\n"
 "# ---- Window --------------------------------------------------------------\n"
 "window.width        = 720       # logical px (before DPI scaling)\n"
-"window.height       = 540\n"
+"window.height       = 580\n"
 "window.x            = -1        # -1 = center horizontally on the primary screen\n"
 "window.y            = -1        # -1 = center vertically\n"
 "window.always_on_top = 0        # 0 / 1\n"

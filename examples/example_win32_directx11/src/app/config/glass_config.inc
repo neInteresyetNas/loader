@@ -1,7 +1,7 @@
 #include <cctype>
 
 struct GlassConfig {
-    int   win_w = 720, win_h = 540;
+    int   win_w = 720, win_h = 580;
     int   win_x = -1,  win_y = -1;
     int   always_on_top = 0;
     int   start_page = 0;

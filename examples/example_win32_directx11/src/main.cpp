@@ -4,6 +4,7 @@
 #include "imgui_impl_dx11.h"
 #include "../../../data/fonts.h"
 #include "../../../data/fa_solid.h"
+#include "app/lumin_store.h"
 #include "glass/backdrop.h"
 #include "glass/glass.h"
 #include "glass/surfaces.h"
@@ -342,6 +343,10 @@ int main(int, char**)
         float mvy = -vy * 0.05f; mvy = mvy < -1.2f ? -1.2f : (mvy > 1.2f ? 1.2f : mvy);
         float tgtx = mvx;
         float tgty = mvy;
+        { // gentle tilt toward the cursor while it is over the window (on top of the drag tilt)
+          float nx = (cursor_local.x / (float)cw - 0.5f) * 0.9f, ny = (cursor_local.y / (float)ch - 0.5f) * 0.9f;
+          bool inside = cursor_local.x >= 0.0f && cursor_local.y >= 0.0f && cursor_local.x <= (float)cw && cursor_local.y <= (float)ch;
+          if (inside) { tgtx += Glass_Clampf(nx, -0.4f, 0.4f); tgty += Glass_Clampf(ny, -0.4f, 0.4f); } }
         float aa = io.DeltaTime * 9.0f; if (aa > 1.0f) aa = 1.0f;
         tiltx += (tgtx - tiltx) * aa; tilty += (tgty - tilty) * aa;
         g_glass_renderer.SetTilt(fxParallax ? tiltx : 0.0f, fxParallax ? tilty : 0.0f);
