@@ -430,7 +430,7 @@ int main(int, char**)
         #include "app/lumin_ui.inc"
         static bool dragging = false;
         static POINT dragCur0; static int dragWin0X = 0, dragWin0Y = 0;
-        bool overItem = ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive();
+        bool overItem = ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive() || gUiCapture;
         bool anyPopup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
         if (!dragging && io.MouseClicked[0] && !overItem && !anyPopup) {
             dragging = true; ::GetCursorPos(&dragCur0); dragWin0X = wr.left; dragWin0Y = wr.top;

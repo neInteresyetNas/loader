@@ -198,8 +198,10 @@ ProfileAction ProfileMenu(const char* id, const char* name, const char* email,
         ImVec2 is = ImGui::CalcTextSize(initials);
         dl->AddText(ImVec2(ac.x - is.x*0.5f, ac.y - is.y*0.5f), SA(IM_COL32(255,255,255,255), master), initials);
         float tx = x + 12.0f + av + 10.0f;
-        dl->AddText(ImVec2(tx, y + 11.0f), SA(kInk, master), shortName);
-        dl->AddText(ImVec2(tx, y + 30.0f), SA(kInkSoft, master), email);
+        dl->PushClipRect(ImVec2(tx, y), ImVec2(x + w - 30.0f, y + bh), true);
+        dl->AddText(ImVec2(tx, y + 10.0f), SA(kInk, master), shortName);
+        dl->AddText(ImGui::GetFont(), 13.0f, ImVec2(tx, y + 31.0f), SA(kInkSoft, master), email);
+        dl->PopClipRect();
         ImVec2 cc(x + w - 18.0f, y + bh*0.5f);
         float ang = ot * kPI, ca = cosf(ang), sa2 = sinf(ang);
         auto rt = [&](float ox, float oy){ return ImVec2(cc.x + ox*ca - oy*sa2, cc.y + ox*sa2 + oy*ca); };
@@ -209,27 +211,25 @@ ProfileAction ProfileMenu(const char* id, const char* name, const char* email,
     }
 
     const float mw = 250.0f, pad = 12.0f, hh = 58.0f, rh = 38.0f, dgap = 12.0f, endpad = 12.0f;
-    float H = pad + hh + dgap + 2*rh + dgap + 3*rh + dgap + 1*rh + endpad + 36.0f;
+    float H = pad + hh + dgap + rh + dgap + rh + endpad;
     float left = x, right = x + mw;
     float bottom = y - 8.0f;
     float top = bottom - H;
     float h2 = H * (0.40f + 0.60f*ot);
     float clipTop = bottom - h2;
 
-    const char*   mLbl[6]  = { "View Profile", "Account Settings", "Status", "Appearance", "Glass Settings", "Sign Out" };
-    Icon          mIco[6]  = { Icon::Person, Icon::Gear, Icon::Wifi, Icon::Display, Icon::Palette, Icon::Lock };
-    int           mKind[6] = { 0, 0, 1, 2, 0, 0 };
-    ProfileAction mAct[6]  = { ProfileAction::ViewProfile, ProfileAction::AccountSettings,
-                               ProfileAction::None, ProfileAction::None,
-                               ProfileAction::GlassSettings, ProfileAction::SignOut };
+    const char*   mLbl[2]  = { "Appearance", "Sign Out" };
+    Icon          mIco[2]  = { Icon::Palette, Icon::PowerOff };
+    int           mKind[2] = { 2, 0 };
+    ProfileAction mAct[2]  = { ProfileAction::None, ProfileAction::SignOut };
     ImU32 stCol[4] = { IM_COL32(52,209,88,255), IM_COL32(255,159,10,255), IM_COL32(255,69,58,255), IM_COL32(142,142,147,255) };
     const char* stName[4] = { "Online", "Away", "Do Not Disturb", "Invisible" };
     const char* thName[3] = { "Dark", "Light", "Auto" };
     Icon        thIco[3]  = { Icon::Moon, Icon::Sun, Icon::Display };
 
-    float rowY[6]; float cy = top + pad + hh + dgap;
-    for (int i = 0; i < 6; ++i) {
-        if (i == 2 || i == 5) cy += dgap;
+    float rowY[2]; float cy = top + pad + hh + dgap;
+    for (int i = 0; i < 2; ++i) {
+        if (i == 1) cy += dgap;
         rowY[i] = cy; cy += rh;
     }
 
@@ -262,16 +262,15 @@ ProfileAction ProfileMenu(const char* id, const char* name, const char* email,
             mdl->AddCircleFilled(ImVec2(ax, ay), 19.0f, SA(tint, master*ot));
             ImVec2 is = ImGui::CalcTextSize(initials);
             mdl->AddText(ImVec2(ax - is.x*0.5f, ay - is.y*0.5f), SA(IM_COL32(255,255,255,255), master*ot), initials);
-            mdl->AddText(ImVec2(ax + 28.0f, top + pad + 6.0f),  SA(kInk, master*ot), name);
-            mdl->AddText(ImVec2(ax + 28.0f, top + pad + 24.0f), SA(kInkSoft, master*ot), email);
+            mdl->AddText(ImVec2(ax + 28.0f, top + pad + 5.0f),  SA(kInk, master*ot), name);
+            mdl->AddText(ImGui::GetFont(), 13.0f, ImVec2(ax + 28.0f, top + pad + 27.0f), SA(kInkSoft, master*ot), email);
         }
         auto divat = [&](float yy){ mdl->AddLine(ImVec2(left+12, yy), ImVec2(right-12, yy), SA(IM_COL32(255,255,255,26), master*ot), 1.0f); };
         divat(top + pad + hh + dgap*0.5f);
-        divat(rowY[2] - dgap*0.5f);
-        divat(rowY[5] - dgap*0.5f);
+        divat(rowY[1] - dgap*0.5f);
 
         int hov = -1;
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < 2; ++i) {
             ImGui::PushID(i);
             ImGui::SetCursorScreenPos(ImVec2(left + 8, rowY[i]));
             ImGui::InvisibleButton("##r", ImVec2(mw - 16, rh - 2));
@@ -283,7 +282,7 @@ ProfileAction ProfileMenu(const char* id, const char* name, const char* email,
             }
             ImGui::PopID();
         }
-        if (live && hov >= 0 && mKind[hov] != 0) openSub = mKind[hov];
+        if (live && hov >= 0) openSub = (mKind[hov] != 0) ? mKind[hov] : 0;
 
         ImGuiID hyk = gid ^ 0x1111u, hak = gid ^ 0x2222u;
         float gy = st->GetFloat(hyk, rowY[0]);
@@ -296,9 +295,9 @@ ProfileAction ProfileMenu(const char* id, const char* name, const char* email,
 
         int sClamp = *status < 0 ? 0 : (*status > 3 ? 3 : *status);
         int tClamp = *theme  < 0 ? 0 : (*theme  > 2 ? 2 : *theme);
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < 2; ++i) {
             float prox = ha * (1.0f - Clampf(fabsf(gy - rowY[i]) / rh, 0.0f, 1.0f));
-            bool isOut = (i == 5);
+            bool isOut = (i == 1);
             ImU32 lc = isOut ? SA(IM_COL32(255,99,97,255), master*ot) : SA(kInk, master*ot);
             if (prox > 0.01f && !isOut) lc = SA(IM_COL32(255,255,255,255), master*ot);
             float iy = rowY[i] + (rh-2)*0.5f;
@@ -314,24 +313,13 @@ ProfileAction ProfileMenu(const char* id, const char* name, const char* email,
                 DrawIcon(mdl, Icon::ChevronR, ImVec2(right - 18.0f, iy), 13.0f,
                          SA(prox > 0.5f ? IM_COL32(255,255,255,255) : kInkSoft, master*ot), 2.0f);
         }
-        {
-            ImFont* ff = ImGui::GetFont();
-            float credY = rowY[5] + rh + 8.0f, mid = (left + right) * 0.5f;
-            mdl->AddLine(ImVec2(left + 12, credY), ImVec2(right - 12, credY), SA(IM_COL32(255,255,255,26), master*ot), 1.0f);
-            const char* c1 = "Created by poncipp \xC2\xB7 @pondot";
-            const char* c2 = "github.com/poncippg-spec";
-            ImVec2 s1 = ff->CalcTextSizeA(13.0f, 99999.0f, 0.0f, c1);
-            ImVec2 s2 = ff->CalcTextSizeA(13.0f, 99999.0f, 0.0f, c2);
-            mdl->AddText(ff, 13.0f, ImVec2(mid - s1.x*0.5f, credY + 8.0f),  SA(kInkSoft, master*ot), c1);
-            mdl->AddText(ff, 13.0f, ImVec2(mid - s2.x*0.5f, credY + 23.0f), SA(AccentCol(), master*ot), c2);
-        }
         ImGui::PopClipRect();
 
         if (ot2 > 0.003f && openSub != 0) {
-            int sc = (openSub == 1) ? 4 : 3;
+            int sc = 2;
             const float sw = 200.0f, srh = 36.0f, spad = 8.0f;
             float sH = spad*2 + sc*srh;
-            int parent = (openSub == 1) ? 2 : 3;
+            int parent = 0;
             float sTop = rowY[parent] - spad;
             if (sTop + sH > bottom - 6) sTop = bottom - 6 - sH;
             if (sTop < top + 6) sTop = top + 6;

@@ -1,6 +1,7 @@
     static int   page = 0, profStatus = 0, profTheme  = 0;
     static bool  logged_in = false;
     static float gShakeX = 0.0f;
+    static bool  gUiCapture = false;
     static char  username[64] = "", password[64] = "", searchbuf[64] = "";
     static float posX = 128.0f, posY = 64.0f, posZ = -342.0f;
     static float pscale = 1.0f, phealth = 100.0f, pspeed = 6.0f;

@@ -1,6 +1,6 @@
-// Lumin UI: license screen -> product menu -> success screen.
-// Included from main.cpp inside the frame loop (needs: scale, ent, authA, style, io, win_w, win_h,
-// font_medium, font_semibold, g_glass_renderer, hwnd, logged_in, gShakeX, appearance, profStatus, profTheme).
+// Lumin UI: intro -> license screen -> product menu -> success screen.
+// Included from main.cpp inside the frame loop (needs: scale, ent, authA, style, io, cw, ch, win_w, win_h,
+// font_medium, font_semibold, g_glass_renderer, hwnd, logged_in, gShakeX, gUiCapture, appearance, profStatus, profTheme).
 //
 // UI ONLY. The "Inject" button is a visual stub: it plays a fake progress bar and shows the success
 // screen. It does not touch any process or file.
@@ -13,11 +13,10 @@
         { "Deadlock", "Deadlock",          "beta",    "Available", IM_COL32(110, 231, 130, 255), 29 },
     };
     static const char* kUserName   = "username";
-    static const char* kUserTag    = "Pro  -  29 days";
+    static const char* kUserTag    = "29 days";
     static const char* kDemoKey    = "LUMIN-DEMO";      // the only key the demo accepts
     static const char* kActionText = "Inject";          // button label (stub)
-    static const char* kUpdateText = "Update available";
-    static const char* kUpdateVer  = "v1.2.0";
+    static const char* kVersion    = "v1.2.0";
     // -------------------------------------------------------------------------------------------
 
     static int   stage = 0;                 // 0 license, 1 menu, 2 success
@@ -30,20 +29,26 @@
     static float shake = 0.0f;
     static bool  busy = false; static float busyT = 0.0f;
     static float okT = 0.0f;
-    static int   lastStage = 0; static float subT = 0.0f;    // starts at 0: the first card fades in on launch
+    static int   lastStage = 0; static float subT = 0.0f;
     static float swapT = 1.0f;
     static bool  closing = false; static float closeT = 0.0f;
-    static float islandClock = 0.0f; static bool islandGone = false;
-    static bool  loadedSaved = false;
+    static bool  loadedSaved = false, welcomePending = false;
+    static float introT = 0.0f;
+    // dynamic island
+    static float islandClock = 0.0f, islandE = 0.0f, islandAppear = 0.0f, islandProg = 0.0f, islandDoneT = 0.0f;
+    static int   islandState = 0;           // 0 offer, 1 installing, 2 done
+    static bool  islandGone = false, islandHide = false;
 
     const float dt   = io.DeltaTime;
     const float tNow = (float)ImGui::GetTime();
     const float kPi  = 3.14159265f;
+    gUiCapture = false;
 
-    const ImU32 ink  = Glass::InkColor();        // follow the light / dark theme
-    const ImU32 soft = Glass::InkSoftColor();
-    const ImU32 pink = IM_COL32(232, 104, 128, 255);
-    const ImU32 okc  = IM_COL32(52, 209, 88, 255);
+    const ImU32 ink   = Glass::InkColor();       // follows the light / dark theme
+    const ImU32 soft  = Glass::InkSoftColor();
+    const ImU32 pink  = IM_COL32(232, 104, 128, 255);
+    const ImU32 violet = IM_COL32(140, 110, 255, 255);
+    const ImU32 okc   = IM_COL32(52, 209, 88, 255);
     const ImU32 white = IM_COL32(255, 255, 255, 255);
 
     // ---- tiny helpers ------------------------------------------------------------------------
@@ -57,10 +62,46 @@
         al = sat01(al);
         return (ImU32)((c & 0x00FFFFFF) | ((ImU32)(al * 255.0f + 0.5f) << 24));
     };
+    auto mulA = [&](ImU32 c, float k) {     // alpha only
+        float al = (float)((c >> 24) & 0xFF) * k;
+        al = al < 0.0f ? 0.0f : (al > 255.0f ? 255.0f : al);
+        return (ImU32)((c & 0x00FFFFFF) | ((ImU32)(al + 0.5f) << 24));
+    };
     auto mix = [&](ImU32 a, ImU32 b, float t) {
         t = sat01(t);
         auto chn = [&](int sh) { float x = (float)((a >> sh) & 0xFF), y = (float)((b >> sh) & 0xFF); return (ImU32)(x + (y - x) * t + 0.5f); };
         return (ImU32)((chn(0)) | (chn(8) << 8) | (chn(16) << 16) | (chn(24) << 24));
+    };
+    auto textW = [&](ImFont* f, float size, const char* t) { return f->CalcTextSizeA(size, 99999.0f, 0.0f, t).x; };
+
+    // ---- the Lumin mark: two broken rings + a spark of light that lands in the gap -------------
+    // p = build progress 0..1 (1 = finished logo). cm = main colour, ca = accent colour.
+    auto drawMark = [&](ImDrawList* d, ImVec2 c, float R, float p, ImU32 cm, ImU32 ca, float flash) {
+        const float gap = 0.52f, dirA = -kPi * 0.25f;
+        float th = R * 0.15f; if (th < 1.8f) th = 1.8f;
+        float po = eo3(p / 0.55f);
+        if (po > 0.004f) {
+            float a0 = dirA + gap, a1 = a0 + (2.0f * kPi - 2.0f * gap) * po;
+            d->PathArcTo(c, R, a0, a1, 64);
+            d->PathStroke(cm, 0, th);
+        }
+        float pi2 = eo3((p - 0.2f) / 0.5f);
+        if (pi2 > 0.004f) {
+            float g2 = 0.62f, b0 = dirA + kPi + g2, b1 = b0 + (2.0f * kPi - 2.0f * g2) * pi2;
+            d->PathArcTo(c, R * 0.58f, b0, b1, 48);
+            d->PathStroke(mulA(ca, 0.95f), 0, th * 0.62f);
+        }
+        float q = sat01((p - 0.55f) / 0.35f);
+        if (q > 0.0f) {
+            float dist = R * (1.0f + (1.0f - eo3(q)) * 2.6f);
+            ImVec2 dp(c.x + std::cos(dirA) * dist, c.y + std::sin(dirA) * dist);
+            float rr = R * 0.17f * (0.55f + 0.45f * eo3(q));
+            for (int k = 0; k < 4; ++k)
+                d->AddCircleFilled(dp, rr * (1.8f + k * 1.1f), mulA(ca, (0.16f - k * 0.035f) * (0.5f + 0.5f * q + flash)), 32);
+            d->AddCircleFilled(dp, rr, cm, 24);
+        }
+        float o2 = eob((p - 0.8f) / 0.2f);
+        if (o2 > 0.0f) d->AddCircleFilled(c, R * 0.12f * o2, ca, 20);
     };
 
     // ---- our own sidebar icons (hand-drawn vectors, one per product) ---------------------------
@@ -88,16 +129,23 @@
     };
 
     // ---- state machines ----------------------------------------------------------------------
+    if (introT < 4.0f) introT += dt;
+    // click / Enter skips the intro once it is running
+    if (introT > 0.7f && introT < 3.0f && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter, false)))
+        introT = 3.0f;
+    const float introGate = sm((introT - 3.0f) / 0.7f);   // the card stays hidden until the splash has faded
+
     // "Remember me": restore a saved key once, at launch
     if (!loadedSaved) {
         loadedSaved = true;
         if (LuminStore::Load(licKey, (int)sizeof(licKey))) {
             remember = true;
-            if (_stricmp(licKey, kDemoKey) == 0) {
-                stage = 1; logged_in = true;
-                Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Lumin", "Welcome back", "You are signed in.");
-            }
+            if (_stricmp(licKey, kDemoKey) == 0) { stage = 1; logged_in = true; welcomePending = true; }
         }
+    }
+    if (welcomePending && introT > 3.4f) {
+        welcomePending = false;
+        Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Lumin", "Welcome back", "You are signed in.");
     }
 
     if (stage != lastStage) { lastStage = stage; subT = 0.0f; }
@@ -122,57 +170,159 @@
     };
 
     // =========================================================================================
+    //  INTRO: the mark builds itself, a spark lands in the gap, LUMIN rises letter by letter
+    // =========================================================================================
+    {
+        const float sa = 1.0f - sm((introT - 3.0f) / 0.6f);
+        if (sa > 0.003f) {
+            ImDrawList* fd = ImGui::GetForegroundDrawList();
+            const float t = introT;
+            const float pcx = (float)cw * 0.5f, pcy = (float)ch * 0.5f;
+            auto A = [&](ImU32 c, float a = 1.0f) {   // splash alpha only (the splash ignores style.Alpha)
+                float al = (float)((c >> 24) & 0xFF) / 255.0f * a * sa;
+                al = sat01(al);
+                return (ImU32)((c & 0x00FFFFFF) | ((ImU32)(al * 255.0f + 0.5f) << 24));
+            };
+            const float panelIn = eo3(t / 0.55f);
+            const float pscale = (0.955f + 0.045f * panelIn) + 0.03f * sm((t - 3.0f) / 0.6f);
+            const float W = 470.0f * pscale, H = 350.0f * pscale;
+            const ImVec2 pmin(pcx - W * 0.5f, pcy - H * 0.5f), pmax(pcx + W * 0.5f, pcy + H * 0.5f);
+
+            // soft drop shadow + panel
+            for (int k = 3; k >= 1; --k)
+                fd->AddRectFilled(ImVec2(pmin.x - k * 5.0f, pmin.y - k * 3.0f), ImVec2(pmax.x + k * 5.0f, pmax.y + k * 7.0f),
+                                  A(IM_COL32(0, 0, 0, 255), 0.07f * panelIn), 34.0f + k * 4.0f);
+            fd->AddRectFilled(pmin, pmax, A(IM_COL32(9, 10, 14, 247), panelIn), 32.0f);
+
+            const ImVec2 lc(pcx, pcy - 52.0f);
+            const float R = 44.0f;
+
+            // drifting aurora inside the panel (clipped to it)
+            fd->PushClipRect(pmin, pmax, true);
+            {
+                float gi = sat01(t / 1.0f);
+                ImVec2 g1(pcx - 80.0f + 26.0f * std::sin(t * 0.9f), lc.y + 6.0f + 12.0f * std::cos(t * 0.7f));
+                ImVec2 g2(pcx + 90.0f + 24.0f * std::cos(t * 0.8f), lc.y + 40.0f + 14.0f * std::sin(t * 0.6f));
+                for (int k = 0; k < 9; ++k) {
+                    float f = 1.0f - k / 9.0f;
+                    fd->AddCircleFilled(g1, 36.0f + k * 12.0f, A(pink, 0.030f * f * gi), 48);
+                    fd->AddCircleFilled(g2, 30.0f + k * 11.0f, A(violet, 0.026f * f * gi), 48);
+                }
+            }
+            fd->PopClipRect();
+            fd->AddRect(pmin, pmax, A(white, 0.10f * panelIn), 32.0f, 0, 1.0f);
+            fd->AddLine(ImVec2(pmin.x + 34.0f, pmin.y + 1.0f), ImVec2(pmax.x - 34.0f, pmin.y + 1.0f), A(white, 0.16f * panelIn), 1.0f);
+
+            // orbiting specks of light
+            {
+                float vis = sat01((t - 0.9f) / 0.8f);
+                for (int i = 0; i < 12; ++i) {
+                    float sp = 0.25f + (i % 4) * 0.09f;
+                    float ang = i * 0.5236f * 1.7f + t * sp * (i % 2 ? 1.0f : -1.0f);
+                    float rad = R * (1.85f + (i % 5) * 0.28f);
+                    float tw = 0.5f + 0.5f * std::sin(t * 2.0f + i * 1.3f);
+                    fd->AddCircleFilled(ImVec2(lc.x + std::cos(ang) * rad, lc.y + std::sin(ang) * rad * 0.8f), 1.1f + (i % 3) * 0.5f,
+                                        A((i % 3 == 0) ? violet : pink, (0.18f + 0.40f * tw) * vis), 10);
+                }
+            }
+
+            // the mark
+            const float p = sat01((t - 0.15f) / 1.45f);
+            const float tLand = 0.15f + 1.45f * 0.9f;
+            float flash = (t > tLand) ? std::exp(-5.0f * (t - tLand)) * 1.4f : 0.0f;
+            {   // glow behind the mark
+                float gin = sat01(t / 1.1f) * (0.80f + 0.20f * std::sin(t * 3.0f)) + flash * 0.5f;
+                for (int k = 0; k < 7; ++k)
+                    fd->AddCircleFilled(lc, R + 6.0f + k * 9.0f, A(pink, 0.070f * (1.0f - k / 7.0f) * gin), 48);
+            }
+            drawMark(fd, lc, R, p, A(white, 0.97f), A(pink), flash);
+            {   // shockwave when the spark lands
+                float tt = (t - tLand) / 0.8f;
+                if (tt > 0.0f && tt < 1.0f) {
+                    fd->AddCircle(lc, R * 1.05f + eo3(tt) * R * 2.8f, A(pink, (1.0f - tt) * 0.45f), 72, 2.0f);
+                    fd->AddCircle(lc, R * 1.05f + eo3(tt - 0.12f) * R * 2.1f, A(white, (1.0f - tt) * 0.16f), 72, 1.2f);
+                }
+            }
+
+            // LUMIN, letter by letter (tracking tightens as it settles)
+            {
+                static const char* letters[5] = { "L", "U", "M", "I", "N" };
+                const float fs = 36.0f;
+                const float spacing = 11.0f + 12.0f * (1.0f - eo3((t - 1.2f) / 1.1f));
+                float wl[5], total = 0.0f;
+                for (int i = 0; i < 5; ++i) { wl[i] = textW(font_semibold, fs, letters[i]); total += wl[i]; }
+                total += spacing * 4.0f;
+                float x = pcx - total * 0.5f, y = pcy + 34.0f;
+                for (int i = 0; i < 5; ++i) {
+                    float e = eo3((t - 1.2f - i * 0.085f) / 0.55f);
+                    if (e > 0.003f)
+                        fd->AddText(font_semibold, fs, ImVec2(x, y + (1.0f - e) * 20.0f), A(IM_COL32(242, 243, 248, 255), e), letters[i]);
+                    x += wl[i] + spacing;
+                }
+            }
+            // progress hairline + caption
+            {
+                const float bw = 196.0f, bx = pcx - bw * 0.5f, by = pcy + 104.0f;
+                float fin = eo3((t - 1.45f) / 0.4f);
+                float prog = eo3((t - 1.45f) / 1.55f);
+                fd->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + 3.0f), A(white, 0.10f * fin), 2.0f);
+                if (prog > 0.003f)
+                    fd->AddRectFilledMultiColor(ImVec2(bx, by), ImVec2(bx + bw * prog, by + 3.0f), A(pink, fin), A(violet, fin), A(violet, fin), A(pink, fin));
+                const char* cap = prog < 0.34f ? "Loading modules" : (prog < 0.72f ? "Checking environment" : (prog < 0.985f ? "Almost ready" : "Ready"));
+                float cw3 = textW(font_medium, 14.0f, cap);
+                fd->AddText(font_medium, 14.0f, ImVec2(pcx - cw3 * 0.5f, by + 13.0f), A(IM_COL32(150, 153, 168, 255), fin), cap);
+            }
+        }
+    }
+
+    // =========================================================================================
     //  LICENSE
     // =========================================================================================
     if (stage == 0) {
         if (Glass::BeginCard("license", Glass::Material::Regular, ImVec2(404.0f * scale, 0))) {
-            const float fade = authA * subA * closeA;
+            const float fade = authA * subA * closeA * introGate;
             g_glass_renderer.SetSubmitFade(fade);
+            ImGui::BeginDisabled(introGate < 0.95f);      // no clicks while the splash is up (alpha is set right after, so no dimming)
             style.Alpha = ent * fade; if (style.Alpha > 1.0f) style.Alpha = 1.0f;
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const float cwid = ImGui::GetContentRegionAvail().x;
+            const float rise = (1.0f - introGate) * 20.0f;
+            ImGui::Dummy(ImVec2(0, rise));
 
-            // header: badge + title
+            // header: our mark on a glass badge, title, subtitle (centred)
             {
-                ImVec2 c = ImGui::GetCursorScreenPos();
-                const float bs = 56.0f;
-                Glass::Primitive badge; badge.cx = c.x + bs * 0.5f; badge.cy = c.y + bs * 0.5f;
-                badge.hw = bs * 0.5f; badge.hh = bs * 0.5f; badge.corner_radius = 16.0f; badge.fade = 1.0f;
+                ImVec2 c0 = ImGui::GetCursorScreenPos();
+                const float bs = 78.0f;
+                const ImVec2 bc(c0.x + cwid * 0.5f, c0.y + bs * 0.5f + 2.0f);
+                float breath = 0.6f + 0.4f * std::sin(tNow * 1.8f);
+                for (int k = 0; k < 5; ++k)
+                    dl->AddCircleFilled(bc, bs * 0.56f + k * 9.0f, fa(pink, (0.12f - k * 0.022f) * breath), 56);
+                Glass::Primitive badge; badge.cx = bc.x; badge.cy = bc.y;
+                badge.hw = bs * 0.5f; badge.hh = bs * 0.5f; badge.corner_radius = 25.0f; badge.fade = 1.0f;
                 badge.material = Glass::Material::Accent;
                 g_glass_renderer.Submit(badge);
-                for (int k = 0; k < 3; ++k)   // slow breathing glow behind the badge
-                    dl->AddCircleFilled(ImVec2(badge.cx, badge.cy), bs * 0.62f + k * 7.0f,
-                                        fa(pink, (0.10f - k * 0.03f) * (0.6f + 0.4f * std::sin(tNow * 1.8f))), 40);
-                Glass::DrawIcon(dl, Glass::Icon::Compass, ImVec2(badge.cx, badge.cy), bs * 0.56f, fa(white), 2.8f);
-                dl->AddText(font_semibold, 24.0f, ImVec2(c.x + bs + 16.0f, c.y + 5.0f), fa(ink), "Lumin");
-                dl->AddText(font_medium, 15.0f, ImVec2(c.x + bs + 16.0f, c.y + 34.0f), fa(soft), "License access");
-                ImGui::Dummy(ImVec2(cwid, bs + 26.0f));
+                drawMark(dl, bc, 25.0f, 1.0f, fa(white), fa(white, 0.62f), 0.0f);
+                const char* title = "Lumin";
+                const char* sub   = "Enter your license key to continue";
+                float tw1 = textW(font_semibold, 28.0f, title), tw2 = textW(font_medium, 15.0f, sub);
+                dl->AddText(font_semibold, 28.0f, ImVec2(c0.x + (cwid - tw1) * 0.5f, c0.y + bs + 14.0f), fa(ink), title);
+                dl->AddText(font_medium, 15.0f, ImVec2(c0.x + (cwid - tw2) * 0.5f, c0.y + bs + 52.0f), fa(soft), sub);
+                ImGui::Dummy(ImVec2(cwid, bs + 52.0f + 18.0f + 24.0f));
             }
-
-            ImGui::PushStyleColor(ImGuiCol_Text, ink);
-            ImGui::TextUnformatted("License key");
-            ImGui::PopStyleColor();
-            ImGui::Dummy(ImVec2(0, 8));
 
             const bool locked = (ver != 0);
 
-            // key field on a thin glass pane
+            // key field (the library field floats its label above the text once something is typed)
             bool enter = false;
             {
-                const float gw = ImGui::GetContentRegionAvail().x, fh = 54.0f;
+                const float gw = ImGui::GetContentRegionAvail().x, fh = 64.0f;
                 ImVec2 gc = ImGui::GetCursorScreenPos();
-                Glass::Primitive box; box.cx = gc.x + gw * 0.5f; box.cy = gc.y + fh * 0.5f;
-                box.hw = gw * 0.5f; box.hh = fh * 0.5f; box.corner_radius = 17.0f; box.fade = 1.0f;
-                box.material = Glass::Material::Thin;
-                g_glass_renderer.Submit(box);
-                dl->AddLine(ImVec2(gc.x + 16.0f, gc.y + 1.0f), ImVec2(gc.x + gw - 16.0f, gc.y + 1.0f), fa(IM_COL32(255, 255, 255, 20)), 1.0f);
                 ImGui::BeginDisabled(locked);
-                if (Glass::FieldRaw("lic", licKey, (int)sizeof(licKey), "XXXX-XXXX-XXXX", Glass::Icon::Key, false, fh))
+                if (Glass::FieldRaw("lic", licKey, (int)sizeof(licKey), "License key", Glass::Icon::Key, false, fh))
                     licErr = false;
                 if (Glass::FieldWasFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) enter = true;
                 ImGui::EndDisabled();
-                // indeterminate sweep along the bottom edge while the key is being checked
-                if (ver == 1) {
+                if (ver == 1) {   // indeterminate sweep along the bottom edge while the key is being checked
                     float u = std::fmod(tNow * 0.85f, 1.0f), segW = gw * 0.34f;
                     float x = gc.x - segW + (gw + segW) * u;
                     dl->PushClipRect(ImVec2(gc.x + 14.0f, gc.y), ImVec2(gc.x + gw - 14.0f, gc.y + fh), true);
@@ -182,32 +332,33 @@
                                                 fa(pink, 0.95f), fa(pink, 0.0f), fa(pink, 0.0f), fa(pink, 0.95f));
                     dl->PopClipRect();
                 }
-                ImGui::SetCursorScreenPos(ImVec2(gc.x, gc.y + fh));
-                ImGui::Dummy(ImVec2(gw, 6.0f));
+                ImGui::Dummy(ImVec2(gw, 12.0f));
             }
 
-            // remember me
-            ImGui::BeginDisabled(locked);
-            Glass::Checkbox("Remember me", &remember);
-            ImGui::EndDisabled();
-
-            // error line (space is always reserved so the layout never jumps)
+            // row: remember me (left) + error message (right)
             {
-                ImVec2 c = ImGui::GetCursorScreenPos();
+                ImVec2 rp = ImGui::GetCursorScreenPos();
+                ImGui::BeginDisabled(locked);
+                Glass::Checkbox("Remember me", &remember);
+                ImGui::EndDisabled();
                 static float errA = 0.0f;
                 errA += ((licErr ? 1.0f : 0.0f) - errA) * (dt * 12.0f > 1.0f ? 1.0f : dt * 12.0f);
                 if (errA > 0.01f) {
+                    const char* em = "Invalid license key";
+                    float ew = textW(font_medium, 15.0f, em);
                     float slide = (1.0f - errA) * 8.0f;
                     ImU32 col = fa(pink, errA);
-                    Glass::DrawIcon(dl, Glass::Icon::Key, ImVec2(c.x + 10.0f, c.y + 16.0f - slide), 15.0f, col, 2.0f);
-                    dl->AddText(font_medium, 15.0f, ImVec2(c.x + 28.0f, c.y + 7.0f - slide), col, "Invalid license key");
+                    float ex = rp.x + cwid - ew - slide;
+                    Glass::DrawIcon(dl, Glass::Icon::Key, ImVec2(ex - 16.0f, rp.y + 12.0f), 15.0f, col, 2.0f);
+                    dl->AddText(font_medium, 15.0f, ImVec2(ex, rp.y + 3.0f), col, em);
                 }
-                ImGui::Dummy(ImVec2(cwid, 30.0f));
+                ImGui::SetCursorScreenPos(ImVec2(rp.x, rp.y + 24.0f));
+                ImGui::Dummy(ImVec2(cwid, 18.0f));
             }
 
             // activate button: label + icon follow the check (Activate -> Checking -> Activated)
             const char* btnLabel = ver == 0 ? "Activate" : (ver == 1 ? "Checking license..." : "Activated");
-            bool go = Glass::Button(btnLabel, true, ImVec2(ImGui::GetContentRegionAvail().x, 50.0f));
+            bool go = Glass::Button(btnLabel, true, ImVec2(ImGui::GetContentRegionAvail().x, 52.0f));
             {
                 ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
                 float tw = ImGui::CalcTextSize(btnLabel).x;
@@ -241,7 +392,14 @@
                     }
                 }
             }
-            ImGui::Dummy(ImVec2(0, 6));
+            // footer
+            {
+                ImVec2 fp = ImGui::GetCursorScreenPos();
+                char foot[64]; std::snprintf(foot, sizeof(foot), "Lumin  -  %s", kVersion);
+                float fw = textW(font_medium, 13.0f, foot);
+                dl->AddText(font_medium, 13.0f, ImVec2(fp.x + (cwid - fw) * 0.5f, fp.y + 14.0f), fa(soft, 0.7f), foot);
+                ImGui::Dummy(ImVec2(cwid, 38.0f));
+            }
 
             // ---- the check itself: a short, smooth "verifying" phase, then the result ----
             if (ver == 0 && (go || enter)) {
@@ -267,6 +425,7 @@
                 }
             }
             g_glass_renderer.SetSubmitFade(1.0f);
+            ImGui::EndDisabled();
             style.Alpha = ent;
         }
         Glass::EndCard();
@@ -277,8 +436,9 @@
         const float dashW = (float)win_w - 92.0f;
         const float dashH = (float)win_h - 92.0f;
         if (Glass::BeginCard("dash", Glass::Material::Regular, ImVec2(dashW, dashH))) {
-            const float fade = authA * subA * closeA;
+            const float fade = authA * subA * closeA * introGate;
             g_glass_renderer.SetSubmitFade(fade);
+            ImGui::BeginDisabled(introGate < 0.95f);      // no clicks while the splash is up (alpha is set right after, so no dimming)
             style.Alpha = ent * fade; if (style.Alpha > 1.0f) style.Alpha = 1.0f;
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const ImVec2 o = ImGui::GetCursorScreenPos();
@@ -286,13 +446,11 @@
             const float innerH = ImGui::GetContentRegionAvail().y;
             const float slide = (1.0f - subA) * 22.0f;
 
-            // title bar: breathing logo in the centre, window buttons on the right
+            // title bar: our mark (fades out while the island is open), window buttons on the right
             {
-                ImVec2 lc(o.x + innerW * 0.5f, o.y + 16.0f);
-                float br = 0.6f + 0.4f * std::sin(tNow * 1.8f);
-                for (int k = 0; k < 4; ++k)
-                    dl->AddCircleFilled(lc, 12.0f + k * 6.0f, fa(pink, (0.10f - k * 0.022f) * br), 32);
-                Glass::DrawIcon(dl, Glass::Icon::Compass, lc, 28.0f, fa(ink), 2.6f);
+                ImVec2 lc(o.x + innerW * 0.5f, o.y + 17.0f);
+                float la = 1.0f - 0.92f * islandE;
+                drawMark(dl, lc, 11.0f, 1.0f, fa(ink, la), fa(pink, la), 0.0f);
                 dl->AddLine(ImVec2(o.x - 8.0f, o.y + 42.0f), ImVec2(o.x + innerW + 8.0f, o.y + 42.0f), fa(ink, 0.10f), 1.0f);
             }
 
@@ -434,49 +592,104 @@
                     if (busyT >= 1.1f) { busy = false; stage = 2; okT = 0.0f; Glass::PlaySfx(Glass::Sfx::Success); }
                 }
 
-                // ---------------- profile row (bottom-left) ----------------
+                // ---------------- profile row (bottom-left): theme + sign out only ----------------
                 {
                     float pbH = 56.0f, pbX = o.x + 6.0f - slide, pbW = sideW - 12.0f;
                     float pbY = o.y + innerH - pbH - 6.0f;
                     Glass::ProfileAction pa = Glass::ProfileMenu("acct", kUserName, kUserTag, "U", IM_COL32(232, 104, 128, 255),
                                                                  pbX, pbY, pbW, &profStatus, &profTheme, fade, false);
-                    switch (pa) {
-                        case Glass::ProfileAction::ViewProfile:
-                            Glass::Notify(Glass::Icon::Person, IM_COL32(232, 104, 128, 255), "Profile", kUserName, "Pro plan, 29 days left."); break;
-                        case Glass::ProfileAction::AccountSettings:
-                        case Glass::ProfileAction::GlassSettings:
-                            Glass::Notify(Glass::Icon::Gear, IM_COL32(142, 142, 147, 255), "Settings", "Coming soon", "Not part of this demo yet."); break;
-                        case Glass::ProfileAction::SignOut:
-                            stage = 0; logged_in = false; licKey[0] = 0; licErr = false; ver = 0; busy = false;
-                            islandClock = 0.0f; islandGone = false;
-                            LuminStore::Clear();
-                            break;
-                        case Glass::ProfileAction::StatusChanged: {
-                            const char* sn[4] = { "Online", "Away", "Do Not Disturb", "Invisible" };
-                            ImU32 sc2[4] = { IM_COL32(52, 209, 88, 255), IM_COL32(255, 159, 10, 255), IM_COL32(255, 69, 58, 255), IM_COL32(142, 142, 147, 255) };
-                            Glass::Notify(Glass::Icon::Person, sc2[profStatus], "Status", sn[profStatus], "Status updated."); break; }
-                        case Glass::ProfileAction::ThemeChanged: {
-                            appearance = (profTheme == 1) ? 1 : 0;      // 0 dark, 1 light, 2 auto -> dark
-                            const char* tn[3] = { "Dark", "Light", "Auto" };
-                            Glass::Notify(Glass::Icon::Display, IM_COL32(94, 92, 230, 255), "Appearance", tn[profTheme], "Theme updated."); break; }
-                        default: break;
+                    if (pa == Glass::ProfileAction::SignOut) {
+                        stage = 0; logged_in = false; licKey[0] = 0; licErr = false; ver = 0; busy = false;
+                        islandClock = 0.0f; islandE = 0.0f; islandAppear = 0.0f; islandState = 0; islandProg = 0.0f;
+                        islandGone = false; islandHide = false;
+                        LuminStore::Clear();
+                    } else if (pa == Glass::ProfileAction::ThemeChanged) {
+                        appearance = (profTheme == 1) ? 1 : 0;      // 0 dark, 1 light
+                        Glass::Notify(Glass::Icon::Display, IM_COL32(94, 92, 230, 255), "Appearance", profTheme == 1 ? "Light" : "Dark", "Theme updated.");
                     }
                 }
 
-                // ---------------- Dynamic Island: "Update available" ----------------
-                if (!islandGone && subA > 0.6f) {
+                // ---------------- Dynamic Island: "Update available" -> Install -> Updated ----------------
+                if (!islandGone && subA > 0.6f && introGate > 0.95f) {
                     islandClock += dt;
-                    float icx = o.x + innerW * 0.5f, itop = o.y - 30.0f;
-                    ImVec2 hmin(icx - 95.0f, itop - 4.0f), hmax(icx + 95.0f, itop + 42.0f);
-                    bool hovI = ImGui::IsMouseHoveringRect(hmin, hmax);
-                    bool pop = hovI || (islandClock > 0.9f && islandClock < 5.8f);
-                    if (islandClock > 0.5f)
-                        Glass::DynamicIsland(Glass::Icon::Download, kUpdateText, kUpdateVer, pop, icx, itop, innerW);
-                    if (hovI && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && islandClock > 0.5f) {
-                        islandGone = true;
-                        Glass::PlaySfx(Glass::Sfx::Tap);
-                        Glass::Notify(Glass::Icon::Download, IM_COL32(52, 209, 88, 255), "Lumin", "Update scheduled", "It will install on the next launch.");
+                    const ImVec2 wp = ImGui::GetWindowPos();
+                    const float wW = ImGui::GetWindowWidth();
+                    const float icx = wp.x + wW * 0.5f;
+                    const float itop = wp.y - 34.0f;
+
+                    islandAppear += (((islandClock > 0.7f && !islandHide) ? 1.0f : 0.0f) - islandAppear) * sat01(dt * 6.0f);
+                    float w = 176.0f + (336.0f - 176.0f) * islandE;
+                    float h = 32.0f + (68.0f - 32.0f) * islandE;
+                    float yo = (1.0f - islandAppear) * -22.0f;
+                    ImVec2 pmin(icx - w * 0.5f, itop + yo), pmax(icx + w * 0.5f, itop + h + yo);
+
+                    bool hovI = islandAppear > 0.6f && ImGui::IsMouseHoveringRect(ImVec2(pmin.x - 6.0f, pmin.y - 6.0f), ImVec2(pmax.x + 6.0f, pmax.y + 6.0f));
+                    if (hovI) gUiCapture = true;
+                    bool wantExp = hovI || (islandClock > 1.3f && islandClock < 6.3f) || islandState != 0;
+                    islandE += ((wantExp ? 1.0f : 0.0f) - islandE) * sat01(dt * 8.0f);
+                    const float e = islandE, ap = islandAppear, cA = (1.0f - e) * (1.0f - e), eA = e * e;
+                    const float mid = (pmin.y + pmax.y) * 0.5f;
+
+                    ImDrawList* fd = ImGui::GetForegroundDrawList();
+                    for (int k = 3; k >= 1; --k)
+                        fd->AddRectFilled(ImVec2(pmin.x - k * 3.0f, pmin.y - k * 2.0f), ImVec2(pmax.x + k * 3.0f, pmax.y + k * 4.0f),
+                                          fa(IM_COL32(0, 0, 0, 255), 0.05f * ap), h * 0.5f + k * 3.0f);
+                    fd->AddRectFilled(pmin, pmax, fa(IM_COL32(8, 8, 11, 250), ap), h * 0.5f);
+                    fd->AddRect(pmin, pmax, fa(white, 0.10f * ap), h * 0.5f, 0, 1.0f);
+                    if (e > 0.02f) fd->AddRect(pmin, pmax, fa(pink, 0.30f * e * ap), h * 0.5f, 0, 1.2f);
+
+                    fd->PushClipRect(pmin, pmax, true);
+                    // compact: icon + text + pulsing dot
+                    if (cA > 0.01f) {
+                        float k = cA * ap;
+                        fd->AddCircleFilled(ImVec2(pmin.x + 18.0f, mid), 9.5f, fa(pink, k), 20);
+                        Glass::DrawIcon(fd, Glass::Icon::Download, ImVec2(pmin.x + 18.0f, mid), 11.0f, fa(white, k), 2.0f);
+                        fd->AddText(font_medium, 13.5f, ImVec2(pmin.x + 35.0f, mid - 8.0f), fa(white, k), "Update available");
+                        float ph = std::fmod(tNow, 1.6f) / 1.6f;
+                        ImVec2 dc(pmax.x - 14.0f, mid);
+                        fd->AddCircleFilled(dc, 3.2f, fa(pink, k), 12);
+                        fd->AddCircle(dc, 3.2f + ph * 6.0f, fa(pink, (1.0f - ph) * 0.6f * k), 20, 1.2f);
                     }
+                    // expanded
+                    if (eA > 0.01f) {
+                        float k = eA * ap;
+                        const ImVec2 ic(pmin.x + 14.0f + 17.0f, mid);
+                        fd->AddCircleFilled(ic, 17.0f, fa(pink, k), 28);
+                        Glass::DrawIcon(fd, islandState == 2 ? Glass::Icon::Check : Glass::Icon::Download, ic, 17.0f, fa(white, k), 2.2f);
+                        const float tx = pmin.x + 14.0f + 34.0f + 12.0f;
+                        const char* title = islandState == 0 ? "Update available" : (islandState == 1 ? "Updating..." : "Update installed");
+                        fd->AddText(font_semibold, 15.5f, ImVec2(tx, mid - 21.0f), fa(white, k), title);
+                        ImVec2 bmin(pmax.x - 14.0f - 74.0f, mid - 15.0f), bmax(pmax.x - 14.0f, mid + 15.0f);
+                        if (islandState == 0) {
+                            char sub[64]; std::snprintf(sub, sizeof(sub), "Lumin %s is ready", kVersion);
+                            fd->AddText(font_medium, 12.5f, ImVec2(tx, mid + 2.0f), fa(IM_COL32(150, 153, 168, 255), k), sub);
+                            bool hovB = ImGui::IsMouseHoveringRect(bmin, bmax);
+                            fd->AddRectFilled(bmin, bmax, fa(hovB ? IM_COL32(246, 128, 150, 255) : pink, k), 15.0f);
+                            float iw = textW(font_medium, 14.0f, "Install");
+                            fd->AddText(font_medium, 14.0f, ImVec2((bmin.x + bmax.x) * 0.5f - iw * 0.5f, mid - 8.0f), fa(white, k), "Install");
+                            if (hovB) gUiCapture = true;
+                            if (hovB && e > 0.85f && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                                islandState = 1; islandProg = 0.0f;
+                                Glass::PlaySfx(Glass::Sfx::Tap);
+                            }
+                        } else if (islandState == 1) {
+                            islandProg += dt * 0.45f;
+                            float pr = sat01(islandProg);
+                            float bx0 = tx, bx1 = bmin.x - 6.0f, by0 = mid + 5.0f;
+                            fd->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by0 + 4.0f), fa(white, 0.14f * k), 2.0f);
+                            fd->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx0 + (bx1 - bx0) * pr, by0 + 4.0f), fa(pink, k), 2.0f);
+                            char pct[16]; std::snprintf(pct, sizeof(pct), "%d%%", (int)(pr * 100.0f));
+                            float pw = textW(font_medium, 14.0f, pct);
+                            fd->AddText(font_medium, 14.0f, ImVec2(pmax.x - 16.0f - pw, mid - 8.0f), fa(IM_COL32(200, 202, 212, 255), k), pct);
+                            if (islandProg >= 1.0f) { islandState = 2; islandDoneT = 0.0f; Glass::PlaySfx(Glass::Sfx::Success); }
+                        } else {
+                            fd->AddText(font_medium, 12.5f, ImVec2(tx, mid + 2.0f), fa(IM_COL32(150, 153, 168, 255), k), "You are up to date");
+                            islandDoneT += dt;
+                            if (islandDoneT > 1.4f) islandHide = true;
+                        }
+                    }
+                    fd->PopClipRect();
+                    if (islandHide && islandAppear < 0.02f) islandGone = true;
                 }
             } else {
                 // ---- success screen: ring draws, check strokes in, particles burst ----
@@ -539,6 +752,7 @@
                 else if (tl == 1) ::ShowWindow(hwnd, SW_MINIMIZE);
             }
             g_glass_renderer.SetSubmitFade(1.0f);
+            ImGui::EndDisabled();
             style.Alpha = ent;
         }
         Glass::EndCard();
