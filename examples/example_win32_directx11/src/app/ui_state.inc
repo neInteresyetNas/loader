@@ -14,7 +14,7 @@
     static int   spawnCount = 5;
     static bool  itPotion = true, itSword = false, itShield = false, itKey = true;
     static bool  catWeapons = true, catArmor = false, catMisc = false;
-    static float accent[3] = { 0.91f, 0.41f, 0.50f };
+    static float accent[3] = { 0.91f, 0.15f, 0.26f };
     static float prog = 0.0f;
     static float gBlur = 0.55f, gOpacity = 0.38f, gSat = 1.35f, gRefr = 24.0f, gChroma = 2.5f, gEdge = 0.22f, gShadow = 0.10f;
     static float gFlow = 5.5f, uiBlurAmt = 3.0f;

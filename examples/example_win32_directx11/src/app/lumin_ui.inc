@@ -55,9 +55,9 @@
 
     const ImU32 ink    = Glass::InkColor();       // follows the light / dark theme
     const ImU32 soft   = Glass::InkSoftColor();
-    const ImU32 pink   = IM_COL32(240, 92, 128, 255);
-    const ImU32 violet = IM_COL32(140, 110, 255, 255);
-    const ImU32 amber  = IM_COL32(255, 170, 90, 255);
+    const ImU32 pink   = IM_COL32(232, 38, 66, 255);
+    const ImU32 violet = IM_COL32(168, 34, 112, 255);
+    const ImU32 amber  = IM_COL32(255, 122, 46, 255);
     const ImU32 okc    = IM_COL32(52, 209, 88, 255);
     const ImU32 white  = IM_COL32(255, 255, 255, 255);
 
@@ -97,123 +97,74 @@
         for (const char* q = t; *q; ++q) { char b[2] = { *q, 0 }; d->AddText(f, size, ImVec2(x, y), col, b); x += textW(f, size, b) + sp; }
     };
 
-    // ---- the Eclipse mark: a glowing corona ring around a dark sphere, a flare lands on the rim ----
-    // p = build progress 0..1. al = alpha multiplier (callers pass style.Alpha or the splash alpha).
-    auto corona = [&](float f) { return f < 0.5f ? mix(amber, pink, f * 2.0f) : mix(pink, violet, (f - 0.5f) * 2.0f); };
-    auto drawEclipse = [&](ImDrawList* d, ImVec2 c, float R, float p, float al) {
-        const float dirA = -kPi * 0.25f;
-        const float po = eo3(p / 0.6f), ps = eob((p - 0.15f) / 0.45f), pf = sat01((p - 0.65f) / 0.35f);
-        for (int k = 0; k < 6; ++k)
-            d->AddCircleFilled(c, R * (1.0f + k * 0.17f), mulA(pink, 0.070f * (1.0f - k / 6.0f) * ps * al), 48);
-        const float th = R * 0.20f;
-        const int N = 56;
-        const float rot = tNow * 0.35f;
-        for (int i = 0; i < N; ++i) {
-            float f0 = (float)i / N;
-            if (f0 >= po) break;
-            float a0 = dirA + rot + f0 * 2.0f * kPi, a1 = a0 + 2.0f * kPi / N + 0.03f;
-            float lw = th * (0.55f + 0.65f * std::max(0.0f, std::cos(a0 - rot - dirA)));
-            d->PathArcTo(c, R, a0, a1, 3);
-            d->PathStroke(mulA(corona(f0), al), 0, lw);
-        }
-        if (ps > 0.01f) {
-            const float r = R * 0.80f * ps;
-            d->AddCircleFilled(c, r, mulA(IM_COL32(12, 10, 22, 255), al), 56);
-            for (int k = 0; k < 9; ++k) {
-                float f = k / 8.0f, rr = r * (0.96f - f * 0.62f);
-                ImVec2 cc(c.x - r * 0.30f * f, c.y - r * 0.34f * f);
-                d->AddCircleFilled(cc, rr, mulA(mix(IM_COL32(50, 30, 96, 255), IM_COL32(150, 80, 170, 255), f), (0.12f + 0.10f * f) * al), 40);
+    // ---- the Eclipse mark: a chrome blade star (4 long + 4 short faceted spikes, crimson gem, red glow) ----
+    // yaw tilts it like a turntable (3D), rot spins it, glow scales the red aura.
+    auto drawStar = [&](ImDrawList* d, ImVec2 c, float R, float yaw, float rot, float al, float glow) {
+        if (R < 1.0f || al < 0.004f) return;
+        const float xs = std::max(0.42f, std::fabs(std::cos(yaw))), sy = std::sin(yaw);
+        const float beat = 0.78f + 0.22f * std::sin(tNow * 2.2f);
+        for (int k = 0; k < 7; ++k)
+            d->AddCircleFilled(c, R * (0.85f + k * 0.24f), mulA(pink, 0.065f * (1.0f - k / 7.0f) * glow * beat * al), 40);
+        const int NS = 8;
+        const float r0 = R * 0.20f, hb = kPi / (float)NS;
+        auto pt = [&](float ang, float rad, float ox, float oy) { return ImVec2(c.x + std::cos(ang) * rad * xs + ox, c.y + std::sin(ang) * rad + oy); };
+        // thickness: a stack of dark copies pushed back
+        for (int l = 5; l >= 1; --l) {
+            float ox = -sy * R * 0.028f * l, oy = R * 0.016f * l;
+            ImU32 col = mulA(mix(IM_COL32(26, 4, 10, 255), IM_COL32(112, 14, 32, 255), 1.0f - l / 5.0f), al);
+            for (int sp = 0; sp < NS; ++sp) {
+                float ang = rot + sp * 2.0f * hb, len = (sp % 2 == 0) ? R : R * 0.60f;
+                d->AddTriangleFilled(pt(ang, len, ox, oy), pt(ang - hb, r0, ox, oy), pt(ang + hb, r0, ox, oy), col);
+                d->AddTriangleFilled(pt(0, 0, ox, oy), pt(ang - hb, r0, ox, oy), pt(ang + hb, r0, ox, oy), col);
             }
-            d->AddCircle(c, r, mulA(white, 0.12f * al), 56, 1.2f);
         }
-        if (pf > 0.0f) {
-            ImVec2 fp(c.x + std::cos(dirA) * R, c.y + std::sin(dirA) * R);
-            float L = R * 0.55f * eo3(pf) * (0.75f + 0.25f * std::sin(tNow * 3.0f));
-            for (int k = 0; k < 4; ++k) d->AddCircleFilled(fp, R * 0.10f * (1.8f + k * 1.2f), mulA(amber, (0.16f - k * 0.035f) * al), 24);
-            d->AddLine(ImVec2(fp.x - L, fp.y), ImVec2(fp.x + L, fp.y), mulA(white, 0.55f * al), 1.4f);
-            d->AddLine(ImVec2(fp.x, fp.y - L), ImVec2(fp.x, fp.y + L), mulA(white, 0.55f * al), 1.4f);
-            d->AddCircleFilled(fp, R * 0.115f * eo3(pf), mulA(white, al), 20);
+        // chrome facets: each spike = a lit and a shaded half, brightness follows a moving light
+        const float lightA = -2.3f + std::sin(tNow * 0.55f) * 0.7f - sy * 0.6f;
+        for (int sp = 0; sp < NS; ++sp) {
+            float ang = rot + sp * 2.0f * hb, len = (sp % 2 == 0) ? R : R * 0.60f;
+            ImVec2 tip = pt(ang, len, 0, 0), bl = pt(ang - hb, r0, 0, 0), br = pt(ang + hb, r0, 0, 0), ce = pt(0, 0, 0, 0);
+            for (int side = 0; side < 2; ++side) {
+                float fang = ang + (side ? hb : -hb) * 0.5f;
+                float v = 0.5f + 0.5f * std::cos(fang - lightA);
+                v = v * v * (sp % 2 == 0 ? 1.0f : 0.8f);
+                ImU32 col = mix(IM_COL32(18, 19, 30, 255), IM_COL32(244, 247, 255, 255), v);
+                col = mix(col, IM_COL32(130, 12, 34, 255), (1.0f - v) * 0.38f);
+                d->AddTriangleFilled(tip, side ? br : bl, ce, mulA(col, al));
+            }
+            d->AddLine(ce, tip, mulA(white, 0.30f * al), 1.0f);
+            d->AddLine(tip, bl, mulA(white, 0.10f * al), 1.0f);
+            d->AddLine(tip, br, mulA(IM_COL32(0, 0, 0, 255), 0.35f * al), 1.0f);
         }
+        // crimson gem in the middle
+        const float gr = R * 0.15f;
+        d->AddCircleFilled(c, gr * 1.55f, mulA(IM_COL32(14, 8, 14, 255), al), 24);
+        d->AddCircleFilled(c, gr * 1.1f, mulA(pink, al), 24);
+        d->AddCircleFilled(ImVec2(c.x - gr * 0.28f, c.y - gr * 0.32f), gr * 0.38f, mulA(white, 0.85f * al), 12);
+        d->AddCircle(c, gr * 1.55f, mulA(white, 0.35f * al), 24, 1.0f);
+    };
+    // brand mark with a build-in animation (p = 0..1): the star spins in and settles
+    auto drawEclipse = [&](ImDrawList* d, ImVec2 c, float R, float p, float al) {
+        const float ps = eob(p / 0.75f);
+        drawStar(d, c, R * 1.08f * ps, std::sin(tNow * 0.5f) * 0.18f, (1.0f - eo3(p)) * kPi * 0.75f + tNow * 0.05f, al, ps);
     };
 
-    // ---- 3D product emblem: a chrome sphere (environment reflection that slides with the cursor) inside a
-    //      brushed-metal orbit ring, chrome beads, soft glow and a mirror floor shadow ----
-    auto chromeRamp = [&](float u) {
-        auto ss = [&](float a, float b, float x) { return sm((x - a) / (b - a)); };
-        ImU32 c = mix(IM_COL32(248, 250, 255, 255), IM_COL32(112, 132, 190, 255), ss(-1.3f, -0.10f, u));      // bright sky
-        c = mix(c, IM_COL32(14, 15, 24, 255), ss(-0.11f, -0.03f, u));                                       // dark horizon band
-        c = mix(c, mix(IM_COL32(255, 182, 136, 255), IM_COL32(78, 44, 92, 255), ss(0.20f, 1.30f, u)), ss(0.10f, 0.22f, u));   // warm ground
-        float hl = std::exp(-std::pow((u + 0.075f) / 0.022f, 2.0f));                                         // bright line on the horizon
-        return mix(c, white, hl * 0.85f);
-    };
-    auto chromeBead = [&](ImDrawList* d, ImVec2 p, float r, float al) {
-        d->AddCircleFilled(ImVec2(p.x, p.y + r * 0.35f), r * 1.9f, mulA(pink, 0.10f * al), 14);
-        d->AddCircleFilled(p, r, mulA(IM_COL32(26, 28, 40, 255), al), 16);
-        d->AddCircleFilled(ImVec2(p.x, p.y - r * 0.15f), r * 0.78f, mulA(IM_COL32(188, 202, 232, 255), 0.85f * al), 16);
-        d->AddCircleFilled(ImVec2(p.x, p.y + r * 0.40f), r * 0.55f, mulA(IM_COL32(40, 30, 52, 255), 0.9f * al), 14);
-        d->AddCircleFilled(ImVec2(p.x - r * 0.35f, p.y - r * 0.4f), r * 0.28f, mulA(white, al), 10);
-    };
+    // ---- 3D product emblem: the chrome blade star hovering over a red-lit floor, turning with the cursor, embers rising ----
     auto drawEmblem = [&](ImDrawList* d, ImVec2 ec, float Rs, float px, float py, float al) {
         const float bob = std::sin(tNow * 1.3f) * 4.0f;
-        const ImVec2 sc(ec.x + px * 5.0f, ec.y + bob + py * 5.0f);
-        {   // floor shadow (shrinks while the orb floats up)
+        const ImVec2 sc(ec.x + px * 6.0f, ec.y + bob + py * 5.0f);
+        {   // floor shadow / red under-glow (shrinks while the star floats up)
             float sh = 1.0f - bob * 0.02f;
-            for (int k = 0; k < 4; ++k)
-                d->AddEllipseFilled(ImVec2(ec.x + px * 2.0f, ec.y + Rs * 1.62f), ImVec2(Rs * (1.05f - k * 0.17f) * sh, 8.0f - k * 1.6f), mulA(pink, 0.08f * al));
+            for (int k = 0; k < 5; ++k)
+                d->AddEllipseFilled(ImVec2(ec.x + px * 2.0f, ec.y + Rs * 1.75f), ImVec2(Rs * (1.30f - k * 0.18f) * sh, 9.0f - k * 1.5f), mulA(pink, 0.075f * al));
         }
-        for (int k = 0; k < 8; ++k)
-            d->AddCircleFilled(sc, Rs * (1.05f + k * 0.20f), mulA((k % 2) ? violet : pink, 0.050f * (1.0f - k / 8.0f) * al), 48);
-
-        // metal orbit ring: segments get lighter / darker like brushed steel catching light
-        const float tl = -0.38f, ct = std::cos(tl), st = std::sin(tl), rx = Rs * 1.52f, ry = Rs * 0.42f;
-        auto orb = [&](float a) { float x = rx * std::cos(a), y = ry * std::sin(a); return ImVec2(sc.x + x * ct - y * st, sc.y + x * st + y * ct); };
-        auto ringHalf = [&](float a0, float a1, float alpha) {
-            for (int i = 0; i <= 36; ++i) d->PathLineTo(orb(a0 + (a1 - a0) * i / 36.0f));
-            d->PathStroke(mulA(violet, 0.14f * alpha * al), 0, 9.0f);
-            const int N = 40;
-            for (int i = 0; i < N; ++i) {
-                float fa0 = a0 + (a1 - a0) * i / N, fa1 = a0 + (a1 - a0) * (i + 1) / N;
-                float v = 0.5f + 0.5f * std::sin(fa0 * 2.0f + tNow * 0.7f);
-                v = v * v;
-                ImU32 c = mix(IM_COL32(34, 36, 52, 255), IM_COL32(236, 242, 255, 255), v);
-                ImVec2 p0 = orb(fa0), p1 = orb(fa1);
-                d->AddLine(p0, p1, mulA(c, alpha * al), 4.6f);
-                d->AddLine(ImVec2(p0.x, p0.y - 1.1f), ImVec2(p1.x, p1.y - 1.1f), mulA(white, 0.35f * v * alpha * al), 1.1f);
-            }
-        };
-        const float ba = tNow * 0.9f, bs = std::sin(ba);
-        ringHalf(kPi, 2.0f * kPi, 0.55f);                       // behind the sphere
-        if (bs < 0.0f) chromeBead(d, orb(ba), 5.2f, al * 0.8f);
-
-        // the chrome sphere: 2px horizontal strips, each coloured by the reflected environment
-        {
-            const int strips = (int)(Rs + 0.5f);
-            const float stepY = 2.0f * Rs / strips;
-            const float shift = py * 0.16f + std::sin(tNow * 0.8f) * 0.035f;
-            for (int i = 0; i < strips; ++i) {
-                float y0 = -Rs + i * stepY, y1 = y0 + stepY + 0.7f, ym = y0 + stepY * 0.5f;
-                float w = std::sqrt(std::max(0.0f, Rs * Rs - ym * ym));
-                float v = ym / Rs;
-                ImU32 base = chromeRamp(v * 1.05f + shift);
-                ImU32 edgeL = mix(base, IM_COL32(10, 10, 18, 255), 0.62f);
-                ImU32 edgeR = mix(mix(base, IM_COL32(10, 10, 18, 255), 0.55f), pink, 0.30f * sat01(v + 0.4f));
-                ImU32 cB = mulA(base, al), cL = mulA(edgeL, al), cR = mulA(edgeR, al);
-                d->AddRectFilledMultiColor(ImVec2(sc.x - w, sc.y + y0), ImVec2(sc.x + 0.5f, sc.y + y1), cL, cB, cB, cL);
-                d->AddRectFilledMultiColor(ImVec2(sc.x - 0.5f, sc.y + y0), ImVec2(sc.x + w, sc.y + y1), cB, cR, cR, cB);
-            }
-            d->AddCircle(sc, Rs, mulA(white, 0.30f * al), 64, 1.3f);
-            d->PathArcTo(sc, Rs - 1.0f, 0.2f, 1.45f, 24); d->PathStroke(mulA(pink, 0.75f * al), 0, 2.4f);
-            d->AddEllipseFilled(ImVec2(sc.x - Rs * 0.36f, sc.y - Rs * 0.46f), ImVec2(Rs * 0.16f, Rs * 0.08f), mulA(white, 0.90f * al), -0.75f);
-            d->AddCircleFilled(ImVec2(sc.x + Rs * 0.44f, sc.y + Rs * 0.40f), Rs * 0.045f, mulA(white, 0.45f * al), 12);
-        }
-        ringHalf(0.0f, kPi, 1.0f);                              // in front of the sphere
-        if (bs >= 0.0f) chromeBead(d, orb(ba), 5.8f, al);
-
-        // floating chrome beads (parallax)
-        for (int i = 0; i < 6; ++i) {
-            float a = tNow * (0.22f + 0.05f * i) + i * 1.05f, rad = Rs * (1.34f + 0.12f * (i % 3));
-            ImVec2 sp(ec.x + std::cos(a) * rad * 1.15f + px * (8.0f + i * 2.0f), ec.y + std::sin(a) * rad * 0.62f + py * (8.0f + i * 2.0f));
-            chromeBead(d, sp, 2.2f + (i % 3) * 0.9f, al * (0.55f + 0.30f * std::sin(tNow * 1.4f + i)));
+        drawStar(d, sc, Rs * 1.32f, std::sin(tNow * 0.55f) * 0.5f + px * 0.55f, tNow * 0.12f + px * 0.25f, al, 1.0f);
+        // embers drifting up from the star
+        for (int i = 0; i < 16; ++i) {
+            float ph = std::fmod(tNow * (0.10f + 0.05f * (i % 4)) + i * 0.37f, 1.0f);
+            float x = sc.x + std::sin(i * 2.7f) * Rs * 1.15f + std::sin(tNow * 0.9f + i) * 6.0f;
+            float y = sc.y + Rs * 1.1f - ph * Rs * 2.5f;
+            float a = std::sin(ph * kPi);
+            d->AddCircleFilled(ImVec2(x, y), 0.9f + (i % 3) * 0.7f, mulA((i % 2) ? amber : pink, 0.85f * a * al), 8);
         }
     };
 
@@ -267,7 +218,7 @@
         if (enabled) {
             for (int q = 1; q <= 4; ++q)
                 d->AddRectFilled(ImVec2(mn.x - q * 3.0f, mn.y - q * 2.0f + 3.0f), ImVec2(mx.x + q * 3.0f, mx.y + q * 3.0f + 3.0f), fa(pink, (0.045f + 0.07f * hv) * (1.0f - q / 5.0f)), r + q * 3.0f);
-            d->AddRectFilled(mn, mx, fa(mix(IM_COL32(214, 58, 104, 255), IM_COL32(248, 112, 100, 255), 0.25f + 0.55f * hv)), r);
+            d->AddRectFilled(mn, mx, fa(mix(IM_COL32(186, 22, 46, 255), IM_COL32(246, 70, 56, 255), 0.25f + 0.55f * hv)), r);
             d->AddRectFilled(mn, ImVec2(mx.x, (mn.y + mx.y) * 0.5f), fa(white, 0.15f), r, ImDrawFlags_RoundCornersTop);
             d->AddRect(mn, mx, fa(white, 0.28f), r, 0, 1.0f);
         } else {
@@ -907,7 +858,7 @@
                 {
                     float pbH = 56.0f, pbX = o.x + 4.0f - slide, pbW = 188.0f;
                     float pbY = o.y + innerH - pbH - 6.0f;
-                    Glass::ProfileAction pa = Glass::ProfileMenu("acct", kUserName, kUserTag, "U", IM_COL32(240, 92, 128, 255),
+                    Glass::ProfileAction pa = Glass::ProfileMenu("acct", kUserName, kUserTag, "U", IM_COL32(232, 38, 66, 255),
                                                                  pbX, pbY, pbW, &profStatus, &profTheme, fade, false);
                     if (pa == Glass::ProfileAction::SignOut) {
                         stage = 0; logged_in = false; licKey[0] = 0; licErr = false; ver = 0; busy = false; busyPhase = 0; autoFocus = false;
