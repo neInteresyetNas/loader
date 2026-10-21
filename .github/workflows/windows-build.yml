@@ -31,9 +31,11 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $exe = Get-ChildItem -Recurse -Filter example_win32_directx11.exe | Select-Object -First 1
+          $exe = Get-ChildItem -Recurse -Include Lumin.exe,example_win32_directx11.exe -Path examples |
+                 Where-Object { $_.FullName -match 'Release' } | Select-Object -First 1
+          if (-not $exe) { Get-ChildItem -Recurse -Filter *.exe -Path examples | ForEach-Object FullName; throw "exe not found" }
+          Write-Host "Found: $($exe.FullName)"
           Copy-Item $exe.FullName dist\Lumin.exe
-          Copy-Item data dist\data -Recurse
 
       - name: Upload build
         uses: actions/upload-artifact@v4
