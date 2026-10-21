@@ -28,7 +28,7 @@
     static int   ver = 0;                   // license check: 0 idle, 1 checking, 2 accepted
     static float verT = 0.0f;
     static float shake = 0.0f;
-    static bool  busy = false; static float busyT = 0.0f; static int busyPhase = 0; static float failT = 0.0f;
+    static bool  busy = false; static float busyT = 0.0f; static int busyPhase = 0; static bool notFound = false; static float nfE = 0.0f; static float pollT = 0.0f, gameE = 0.0f; static bool gameUp = false;
     static float okT = 0.0f;
     static int   lastStage = 0; static float subT = 0.0f;
     static float loadT = 0.0f;              // skeleton -> values reveal
@@ -136,63 +136,84 @@
         }
     };
 
-    // ---- 3D product emblem: dark orb with lighting, tilted orbit ring (back half / front half), bolt, shards ----
+    // ---- 3D product emblem: a chrome sphere (environment reflection that slides with the cursor) inside a
+    //      brushed-metal orbit ring, chrome beads, soft glow and a mirror floor shadow ----
+    auto chromeRamp = [&](float u) {
+        auto ss = [&](float a, float b, float x) { return sm((x - a) / (b - a)); };
+        ImU32 c = mix(IM_COL32(248, 250, 255, 255), IM_COL32(112, 132, 190, 255), ss(-1.3f, -0.10f, u));      // bright sky
+        c = mix(c, IM_COL32(14, 15, 24, 255), ss(-0.11f, -0.03f, u));                                       // dark horizon band
+        c = mix(c, mix(IM_COL32(255, 182, 136, 255), IM_COL32(78, 44, 92, 255), ss(0.20f, 1.30f, u)), ss(0.10f, 0.22f, u));   // warm ground
+        float hl = std::exp(-std::pow((u + 0.075f) / 0.022f, 2.0f));                                         // bright line on the horizon
+        return mix(c, white, hl * 0.85f);
+    };
+    auto chromeBead = [&](ImDrawList* d, ImVec2 p, float r, float al) {
+        d->AddCircleFilled(ImVec2(p.x, p.y + r * 0.35f), r * 1.9f, mulA(pink, 0.10f * al), 14);
+        d->AddCircleFilled(p, r, mulA(IM_COL32(26, 28, 40, 255), al), 16);
+        d->AddCircleFilled(ImVec2(p.x, p.y - r * 0.15f), r * 0.78f, mulA(IM_COL32(188, 202, 232, 255), 0.85f * al), 16);
+        d->AddCircleFilled(ImVec2(p.x, p.y + r * 0.40f), r * 0.55f, mulA(IM_COL32(40, 30, 52, 255), 0.9f * al), 14);
+        d->AddCircleFilled(ImVec2(p.x - r * 0.35f, p.y - r * 0.4f), r * 0.28f, mulA(white, al), 10);
+    };
     auto drawEmblem = [&](ImDrawList* d, ImVec2 ec, float Rs, float px, float py, float al) {
         const float bob = std::sin(tNow * 1.3f) * 4.0f;
         const ImVec2 sc(ec.x + px * 5.0f, ec.y + bob + py * 5.0f);
-        // floor shadow (shrinks while the orb floats up)
-        {
+        {   // floor shadow (shrinks while the orb floats up)
             float sh = 1.0f - bob * 0.02f;
             for (int k = 0; k < 4; ++k)
-                d->AddEllipseFilled(ImVec2(ec.x + px * 2.0f, ec.y + Rs * 1.62f), ImVec2(Rs * (1.05f - k * 0.17f) * sh, 8.0f - k * 1.6f), mulA(pink, 0.07f * al));
+                d->AddEllipseFilled(ImVec2(ec.x + px * 2.0f, ec.y + Rs * 1.62f), ImVec2(Rs * (1.05f - k * 0.17f) * sh, 8.0f - k * 1.6f), mulA(pink, 0.08f * al));
         }
-        // glow behind
         for (int k = 0; k < 8; ++k)
             d->AddCircleFilled(sc, Rs * (1.05f + k * 0.20f), mulA((k % 2) ? violet : pink, 0.050f * (1.0f - k / 8.0f) * al), 48);
-        // orbit ring geometry
-        const float tl = -0.38f, ct = std::cos(tl), st = std::sin(tl), rx = Rs * 1.50f, ry = Rs * 0.42f;
+
+        // metal orbit ring: segments get lighter / darker like brushed steel catching light
+        const float tl = -0.38f, ct = std::cos(tl), st = std::sin(tl), rx = Rs * 1.52f, ry = Rs * 0.42f;
         auto orb = [&](float a) { float x = rx * std::cos(a), y = ry * std::sin(a); return ImVec2(sc.x + x * ct - y * st, sc.y + x * st + y * ct); };
         auto ringHalf = [&](float a0, float a1, float alpha) {
-            for (int pass = 0; pass < 2; ++pass) {
-                for (int i = 0; i <= 36; ++i) d->PathLineTo(orb(a0 + (a1 - a0) * i / 36.0f));
-                d->PathStroke(mulA(pass == 0 ? violet : mix(pink, violet, 0.4f), (pass == 0 ? 0.16f : 1.0f) * alpha * al), 0, pass == 0 ? 7.0f : 2.2f);
+            for (int i = 0; i <= 36; ++i) d->PathLineTo(orb(a0 + (a1 - a0) * i / 36.0f));
+            d->PathStroke(mulA(violet, 0.14f * alpha * al), 0, 9.0f);
+            const int N = 40;
+            for (int i = 0; i < N; ++i) {
+                float fa0 = a0 + (a1 - a0) * i / N, fa1 = a0 + (a1 - a0) * (i + 1) / N;
+                float v = 0.5f + 0.5f * std::sin(fa0 * 2.0f + tNow * 0.7f);
+                v = v * v;
+                ImU32 c = mix(IM_COL32(34, 36, 52, 255), IM_COL32(236, 242, 255, 255), v);
+                ImVec2 p0 = orb(fa0), p1 = orb(fa1);
+                d->AddLine(p0, p1, mulA(c, alpha * al), 4.6f);
+                d->AddLine(ImVec2(p0.x, p0.y - 1.1f), ImVec2(p1.x, p1.y - 1.1f), mulA(white, 0.35f * v * alpha * al), 1.1f);
             }
         };
         const float ba = tNow * 0.9f, bs = std::sin(ba);
-        ringHalf(kPi, 2.0f * kPi, 0.38f);                       // behind the orb
-        if (bs < 0.0f) { ImVec2 b = orb(ba); d->AddCircleFilled(b, 9.0f, mulA(amber, 0.16f * al), 16); d->AddCircleFilled(b, 3.4f, mulA(amber, 0.7f * al), 12); }
-        // the orb
-        d->AddCircleFilled(sc, Rs, mulA(IM_COL32(15, 12, 28, 255), al), 64);
-        for (int k = 0; k < 10; ++k) {
-            float f = k / 9.0f, rr = Rs * (0.97f - f * 0.64f);
-            ImVec2 cc(sc.x - Rs * 0.32f * f, sc.y - Rs * 0.36f * f);
-            d->AddCircleFilled(cc, rr, mulA(mix(IM_COL32(64, 38, 120, 255), IM_COL32(255, 130, 160, 255), f), (0.11f + 0.12f * f) * al), 48);
-        }
-        d->PathArcTo(sc, Rs - 1.0f, 0.15f, 1.55f, 24); d->PathStroke(mulA(violet, 0.65f * al), 0, 2.2f);
-        d->PathArcTo(sc, Rs - 1.0f, kPi * 1.05f, kPi * 1.65f, 24); d->PathStroke(mulA(white, 0.30f * al), 0, 1.6f);
-        d->AddCircleFilled(ImVec2(sc.x - Rs * 0.40f, sc.y - Rs * 0.44f), Rs * 0.085f, mulA(white, 0.55f * al), 16);
-        // bolt
+        ringHalf(kPi, 2.0f * kPi, 0.55f);                       // behind the sphere
+        if (bs < 0.0f) chromeBead(d, orb(ba), 5.2f, al * 0.8f);
+
+        // the chrome sphere: 2px horizontal strips, each coloured by the reflected environment
         {
-            const ImVec2 bc(sc.x + px * 9.0f, sc.y + py * 9.0f + std::sin(tNow * 1.7f) * 2.0f);
-            const float s = Rs * 0.44f;
-            for (int k = 0; k < 4; ++k) d->AddCircleFilled(bc, s * (0.9f + k * 0.45f), mulA(pink, 0.075f * (1.0f - k / 4.0f) * al), 32);
-            const ImU32 cc2 = mulA(mix(white, IM_COL32(255, 205, 220, 255), 0.35f), 0.97f * al);
-            d->AddCircle(bc, s * 0.62f, cc2, 40, 2.8f);
-            for (int k = 0; k < 4; ++k) {
-                float ax = std::cos(k * kPi * 0.5f), ay = std::sin(k * kPi * 0.5f);
-                d->AddLine(ImVec2(bc.x + ax * s * 0.36f, bc.y + ay * s * 0.36f), ImVec2(bc.x + ax * s * 1.0f, bc.y + ay * s * 1.0f), cc2, 2.8f);
+            const int strips = (int)(Rs + 0.5f);
+            const float stepY = 2.0f * Rs / strips;
+            const float shift = py * 0.16f + std::sin(tNow * 0.8f) * 0.035f;
+            for (int i = 0; i < strips; ++i) {
+                float y0 = -Rs + i * stepY, y1 = y0 + stepY + 0.7f, ym = y0 + stepY * 0.5f;
+                float w = std::sqrt(std::max(0.0f, Rs * Rs - ym * ym));
+                float v = ym / Rs;
+                ImU32 base = chromeRamp(v * 1.05f + shift);
+                ImU32 edgeL = mix(base, IM_COL32(10, 10, 18, 255), 0.62f);
+                ImU32 edgeR = mix(mix(base, IM_COL32(10, 10, 18, 255), 0.55f), pink, 0.30f * sat01(v + 0.4f));
+                ImU32 cB = mulA(base, al), cL = mulA(edgeL, al), cR = mulA(edgeR, al);
+                d->AddRectFilledMultiColor(ImVec2(sc.x - w, sc.y + y0), ImVec2(sc.x + 0.5f, sc.y + y1), cL, cB, cB, cL);
+                d->AddRectFilledMultiColor(ImVec2(sc.x - 0.5f, sc.y + y0), ImVec2(sc.x + w, sc.y + y1), cB, cR, cR, cB);
             }
-            d->AddCircleFilled(bc, 2.6f, cc2, 12);
+            d->AddCircle(sc, Rs, mulA(white, 0.30f * al), 64, 1.3f);
+            d->PathArcTo(sc, Rs - 1.0f, 0.2f, 1.45f, 24); d->PathStroke(mulA(pink, 0.75f * al), 0, 2.4f);
+            d->AddEllipseFilled(ImVec2(sc.x - Rs * 0.36f, sc.y - Rs * 0.46f), ImVec2(Rs * 0.16f, Rs * 0.08f), mulA(white, 0.90f * al), -0.75f);
+            d->AddCircleFilled(ImVec2(sc.x + Rs * 0.44f, sc.y + Rs * 0.40f), Rs * 0.045f, mulA(white, 0.45f * al), 12);
         }
-        ringHalf(0.0f, kPi, 0.95f);                              // in front of the orb
-        if (bs >= 0.0f) { ImVec2 b = orb(ba); d->AddCircleFilled(b, 10.0f, mulA(amber, 0.18f * al), 16); d->AddCircleFilled(b, 3.8f, mulA(white, 0.95f * al), 12); }
-        // floating shards (parallax)
-        for (int i = 0; i < 7; ++i) {
-            float a = tNow * (0.22f + 0.05f * i) + i * 0.9f, rad = Rs * (1.30f + 0.13f * (i % 3));
+        ringHalf(0.0f, kPi, 1.0f);                              // in front of the sphere
+        if (bs >= 0.0f) chromeBead(d, orb(ba), 5.8f, al);
+
+        // floating chrome beads (parallax)
+        for (int i = 0; i < 6; ++i) {
+            float a = tNow * (0.22f + 0.05f * i) + i * 1.05f, rad = Rs * (1.34f + 0.12f * (i % 3));
             ImVec2 sp(ec.x + std::cos(a) * rad * 1.15f + px * (8.0f + i * 2.0f), ec.y + std::sin(a) * rad * 0.62f + py * (8.0f + i * 2.0f));
-            float sz = 2.2f + (i % 3) * 1.1f, tw = 0.5f + 0.5f * std::sin(tNow * 1.6f + i * 1.7f);
-            ImU32 c = mulA((i % 2) ? pink : violet, (0.25f + 0.55f * tw) * al);
-            d->AddQuadFilled(ImVec2(sp.x - sz, sp.y), ImVec2(sp.x, sp.y - sz * 1.4f), ImVec2(sp.x + sz, sp.y), ImVec2(sp.x, sp.y + sz * 1.4f), c);
+            chromeBead(d, sp, 2.2f + (i % 3) * 0.9f, al * (0.55f + 0.30f * std::sin(tNow * 1.4f + i)));
         }
     };
 
@@ -312,7 +333,12 @@
     loadT += dt * 1.25f; if (loadT > 2.0f) loadT = 2.0f;
 
     if (lockT > 0.0f) { lockT -= dt; if (lockT <= 0.0f) { lockT = 0.0f; licErr = false; } }
-    if (failT > 0.0f) failT -= dt * 0.35f;
+    if (stage == 1) {                     // watch the game process (read-only) so the screen can show its state live
+        pollT -= dt;
+        if (pollT <= 0.0f) { gameUp = procRunning(kProcName); pollT = 2.0f; if (gameUp) notFound = false; }
+    }
+    gameE += ((gameUp ? 1.0f : 0.0f) - gameE) * sat01(dt * 6.0f);
+    nfE += (((notFound && !busy) ? 1.0f : 0.0f) - nfE) * sat01(dt * 9.0f);
     pastedFlash -= dt * 2.0f; if (pastedFlash < 0.0f) pastedFlash = 0.0f;
     if (pasteActive) {      // clipboard text "types itself" into the field
         pasteAcc += dt;
@@ -726,6 +752,18 @@
                 dl->AddText(font_medium, 11.5f, ImVec2(rx0 + 2.0f, y0), fa(soft, 0.9f), "SELECTED PRODUCT");
                 dl->AddText(font_semibold, 30.0f, ImVec2(rx0, y0 + 16.0f), fa(ink), kProdName);
 
+                {   // live game indicator (reads the process list every 2 s)
+                    const char* gl = gameUp ? "Game running" : "Game not running";
+                    const float gw2 = textW(font_medium, 13.0f, gl) + 34.0f;
+                    const ImVec2 g0(rx0 + rw - gw2, y0 + 20.0f), g1(rx0 + rw, y0 + 46.0f);
+                    const ImU32 gc2 = mix(IM_COL32(150, 153, 168, 255), okc, gameE);
+                    dl->AddRectFilled(g0, g1, fa(gc2, 0.12f), 13.0f);
+                    dl->AddRect(g0, g1, fa(gc2, 0.30f), 13.0f, 0, 1.0f);
+                    const ImVec2 gd(g0.x + 14.0f, (g0.y + g1.y) * 0.5f);
+                    dl->AddCircleFilled(gd, 3.5f, fa(gc2), 14);
+                    if (gameUp) { float ph = std::fmod(tNow, 1.8f) / 1.8f; dl->AddCircle(gd, 3.5f + ph * 7.0f, fa(okc, (1.0f - ph) * 0.5f), 20, 1.3f); }
+                    dl->AddText(font_medium, 13.0f, ImVec2(g0.x + 25.0f, g0.y + 5.0f), fa(gameUp ? ink : soft), gl);
+                }
                 const float rowH = 38.0f, panelY = y0 + 64.0f, panelH = rowH * 4 + 16.0f;
                 dl->AddRectFilled(ImVec2(rx0, panelY), ImVec2(rx0 + rw, panelY + panelH), fa(ink, 0.045f), 16.0f);
                 dl->AddRect(ImVec2(rx0, panelY), ImVec2(rx0 + rw, panelY + panelH), fa(ink, 0.09f), 16.0f, 0, 1.0f);
@@ -787,15 +825,38 @@
                 // action button (stub)
                 const ImVec2 abp(rx0, panelY + panelH + 18.0f);
                 const bool actOk = !busy && loadT >= 1.4f && strcmp(kProdStatus, "Available") == 0;
-                if (!busy) {
+                if (!busy && notFound) {
+                    // game not running: a calm inline card instead of the button (with Retry)
+                    const float e = nfE;
+                    const ImVec2 n0(abp.x, abp.y + (1.0f - e) * 8.0f), n1(abp.x + rw, abp.y + 56.0f + (1.0f - e) * 8.0f);
+                    const float mid = (n0.y + n1.y) * 0.5f;
+                    dl->AddRectFilled(n0, n1, fa(amber, 0.085f * e), 16.0f);
+                    dl->AddRect(n0, n1, fa(amber, 0.34f * e), 16.0f, 0, 1.2f);
+                    const ImVec2 ic(n0.x + 30.0f, mid);
+                    const float pph = std::fmod(tNow, 2.0f) / 2.0f;
+                    dl->AddCircleFilled(ic, 17.0f, fa(amber, 0.16f * e), 28);
+                    dl->AddCircle(ic, 17.0f + pph * 9.0f, fa(amber, (1.0f - pph) * 0.35f * e), 32, 1.4f);
+                    Glass::DrawIcon(dl, Glass::Icon::Display, ic, 18.0f, fa(amber, e), 2.0f);
+                    dl->AddText(font_semibold, 14.5f, ImVec2(n0.x + 58.0f, mid - 19.0f), fa(ink, e), "Counter-Strike 2 is not running");
+                    dl->AddText(font_medium, 12.5f, ImVec2(n0.x + 58.0f, mid + 2.0f), fa(soft, e), "Launch the game, then press Retry");
+                    const ImVec2 r0(n1.x - 14.0f - 64.0f, mid - 15.0f), r1(n1.x - 14.0f, mid + 15.0f);
+                    ImGui::SetCursorScreenPos(r0);
+                    bool rc = ImGui::InvisibleButton("##retry", ImVec2(64.0f, 30.0f));
+                    bool rh = ImGui::IsItemHovered();
+                    dl->AddRectFilled(r0, r1, fa(amber, (rh ? 0.30f : 0.18f) * e), 15.0f);
+                    dl->AddRect(r0, r1, fa(amber, 0.55f * e), 15.0f, 0, 1.0f);
+                    dl->AddText(font_medium, 14.0f, ImVec2((r0.x + r1.x) * 0.5f - textW(font_medium, 14.0f, "Retry") * 0.5f, mid - 8.0f), fa(amber, e), "Retry");
+                    ImGui::SetCursorScreenPos(abp); ImGui::Dummy(ImVec2(rw, 56.0f));
+                    if (rc && e > 0.6f) { notFound = false; busy = true; busyT = 0.0f; busyPhase = 0; }
+                } else if (!busy) {
                     ImVec2 bmn, bmx;
                     bool clicked = pbtn("inj", abp, ImVec2(rw, 52.0f), actOk, bmn, bmx);
                     const float tw = textW(font_semibold, 17.0f, kActionText);
                     const ImU32 tcol = actOk ? fa(white) : fa(soft);
-                    Glass::DrawIcon(dl, Glass::Icon::Crosshairs, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f - 18.0f, (bmn.y + bmx.y) * 0.5f), 18.0f, tcol, 2.2f);
+                    Glass::DrawIcon(dl, Glass::Icon::Bolt, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f - 18.0f, (bmn.y + bmx.y) * 0.5f), 18.0f, tcol, 2.2f);
                     dl->AddText(font_semibold, 17.0f, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f + 6.0f, (bmn.y + bmx.y) * 0.5f - 9.5f), tcol, kActionText);
                     if (actOk) sweep(dl, bmn, bmx, 3.4f, 0.38f);
-                    if (clicked) { busy = true; busyT = 0.0f; busyPhase = 0; failT = 0.0f; Glass::PlaySfx(Glass::Sfx::Tap); }
+                    if (clicked) { busy = true; busyT = 0.0f; busyPhase = 0; notFound = false; }
                 } else if (busyPhase == 0) {
                     // step 1: look for the game process (spinner + sweep while "scanning")
                     busyT += dt;
@@ -817,11 +878,7 @@
                     ImGui::SetCursorScreenPos(abp); ImGui::Dummy(ImVec2(rw, 52.0f));
                     if (busyT >= 1.1f) {
                         if (procRunning(kProcName)) { busyPhase = 1; busyT = 0.0f; }
-                        else {
-                            busy = false; failT = 1.0f; shake = 0.5f;
-                            Glass::PlaySfx(Glass::Sfx::Error);
-                            Glass::Notify(Glass::Icon::WarnTriangle, IM_COL32(255, 159, 10, 255), "Game not found", "Counter-Strike 2 is not running", "Start the game, then press Inject again.");
-                        }
+                        else { busy = false; notFound = true; nfE = 0.0f; }
                     }
                 } else {
                     // step 2: process found -> loading animation (visual only)
@@ -840,10 +897,6 @@
                     dl->AddText(font_medium, 15.0f, ImVec2(abp.x + (rw - textW(font_medium, 15.0f, msg)) * 0.5f, abp.y + 30.0f), fa(soft), msg);
                     ImGui::SetCursorScreenPos(abp); ImGui::Dummy(ImVec2(rw, 52.0f));
                     if (busyT >= 1.1f) { busy = false; busyPhase = 0; stage = 2; okT = 0.0f; Glass::PlaySfx(Glass::Sfx::Success); }
-                }
-                if (failT > 0.01f && !busy) {
-                    char hb[64]; std::snprintf(hb, sizeof(hb), "%ls not found - start the game first", kProcName);
-                    dl->AddText(font_medium, 13.5f, ImVec2(abp.x + (rw - textW(font_medium, 13.5f, hb)) * 0.5f, abp.y + 60.0f), fa(IM_COL32(255, 120, 120, 255), sat01(failT * 2.0f)), hb);
                 }
                 {   // version tag, bottom right
                     char vb[48]; std::snprintf(vb, sizeof(vb), "Eclipse  %s", kVersion);

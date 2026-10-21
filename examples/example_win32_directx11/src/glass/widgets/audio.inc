@@ -129,6 +129,7 @@ void PlaySfx(Sfx id){
     int k = (int)id;
     if (k < 0 || k >= (int)Sfx::Count) return;
     g_sfxConsumed = true;
+    return;   // Eclipse: the UI is silent
     if (!g_sfxEnabled) return;
     if (!g_sfxBank[k]) g_sfxBank[k] = SfxBuild(kSfx[k]);
     if (g_sfxBank[k]) { PlaySoundA((LPCSTR)g_sfxBank[k], nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT); if (g_sfxTap) g_sfxTap(g_sfxBank[k]); }
