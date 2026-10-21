@@ -170,7 +170,7 @@ int main(int, char**)
     float scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint(POINT{0,0}, MONITOR_DEFAULTTOPRIMARY));
     const float baseScale = scale;
     LoadOrCreateConfig();
-    WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"GlassOverlay", nullptr };
+    WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), LoadIconW(GetModuleHandle(nullptr), MAKEINTRESOURCEW(1)), nullptr, nullptr, nullptr, L"GlassOverlay", LoadIconW(GetModuleHandle(nullptr), MAKEINTRESOURCEW(1)) };
     ::RegisterClassExW(&wc);
     const int win_w = (int)(g_cfg.win_w * scale);
     const int win_h = (int)(g_cfg.win_h * scale);

@@ -30,7 +30,12 @@
     static bool  busy = false; static float busyT = 0.0f;
     static float okT = 0.0f;
     static int   lastStage = 0; static float subT = 0.0f;
-    static float swapT = 1.0f;
+    static float loadT = 0.0f;              // skeleton -> values reveal
+    static float contentT = 1.0f; static int lastGrp = 0;
+    static int   fails = 0; static float lockT = 0.0f;
+    static char  errMsg[40] = "Invalid license key";
+    static bool  pasteActive = false; static int pasteIdx = 0, pasteLen = 0; static float pasteAcc = 0.0f, pastedFlash = 0.0f;
+    static char  pasteBuf[48] = "";
     static bool  closing = false; static float closeT = 0.0f;
     static bool  loadedSaved = false, welcomePending = false;
     static float introT = 0.0f;
@@ -73,6 +78,31 @@
         return (ImU32)((chn(0)) | (chn(8) << 8) | (chn(16) << 16) | (chn(24) << 24));
     };
     auto textW = [&](ImFont* f, float size, const char* t) { return f->CalcTextSizeA(size, 99999.0f, 0.0f, t).x; };
+
+    // soft drifting glow orbs + twinkling dust (decor only), clipped to the card
+    auto drawAmbient = [&](ImDrawList* d, ImVec2 mn, ImVec2 mx) {
+        const float w = mx.x - mn.x, h = mx.y - mn.y;
+        d->PushClipRect(mn, mx, true);
+        for (int o = 0; o < 3; ++o) {
+            ImVec2 c(mn.x + w * (0.22f + 0.28f * o + 0.07f * std::sin(tNow * (0.21f + 0.05f * o) + o * 2.1f)),
+                     mn.y + h * (0.30f + 0.22f * (o % 2) + 0.08f * std::cos(tNow * (0.17f + 0.04f * o) + o * 1.3f)));
+            const ImU32 col = (o == 1) ? violet : pink;
+            const float rad = (w < h ? w : h) * (0.34f + 0.05f * o);
+            for (int k = 0; k < 8; ++k)
+                d->AddCircleFilled(c, rad * (0.30f + k * 0.10f), fa(col, 0.020f * (1.0f - k / 8.0f)), 40);
+        }
+        for (int i = 0; i < 24; ++i) {
+            float r1 = std::fmod(std::fabs(std::sin(i * 12.9898f) * 43758.5f), 1.0f);
+            float r2 = std::fmod(std::fabs(std::sin(i * 78.233f) * 12345.6f), 1.0f);
+            float r3 = std::fmod(std::fabs(std::sin(i * 39.346f) * 9876.5f), 1.0f);
+            float x = std::fmod(r1 + tNow * (0.004f + 0.006f * r3), 1.0f);
+            float y = std::fmod(r2 - tNow * (0.010f + 0.014f * r3) + 4.0f, 1.0f);
+            float tw = 0.5f + 0.5f * std::sin(tNow * (0.8f + r3 * 1.6f) + i);
+            float edge = std::sin(y * kPi);
+            d->AddCircleFilled(ImVec2(mn.x + x * w, mn.y + y * h), 0.9f + r3 * 1.3f, fa((i % 3 == 0) ? violet : pink, (0.10f + 0.30f * tw) * edge), 8);
+        }
+        d->PopClipRect();
+    };
 
     // ---- the Lumin mark: two broken rings + a spark of light that lands in the gap -------------
     // p = build progress 0..1 (1 = finished logo). cm = main colour, ca = accent colour.
@@ -148,12 +178,29 @@
         Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Lumin", "Welcome back", "You are signed in.");
     }
 
-    if (stage != lastStage) { lastStage = stage; subT = 0.0f; }
+    if (stage != lastStage) {
+        lastStage = stage; contentT = 0.0f;
+        if (stage == 1) loadT = 0.0f;
+        int grp = (stage == 0) ? 0 : 1;
+        if (grp != lastGrp) { lastGrp = grp; subT = 0.0f; }
+    }
     subT += dt * 3.2f; if (subT > 1.0f) subT = 1.0f;
     const float subA = sm(subT);
+    contentT += dt * 3.0f; if (contentT > 1.0f) contentT = 1.0f;
+    const float contentA = sm(contentT);
 
-    if (sel != lastSel) { lastSel = sel; swapT = 0.0f; }
-    swapT += dt * 2.6f; if (swapT > 1.0f) swapT = 1.0f;
+    if (sel != lastSel) { lastSel = sel; loadT = 0.0f; }
+    loadT += dt * 1.25f; if (loadT > 2.0f) loadT = 2.0f;
+
+    if (lockT > 0.0f) { lockT -= dt; if (lockT <= 0.0f) { lockT = 0.0f; licErr = false; } }
+    pastedFlash -= dt * 2.0f; if (pastedFlash < 0.0f) pastedFlash = 0.0f;
+    if (pasteActive) {      // clipboard text "types itself" into the field
+        pasteAcc += dt;
+        while (pasteAcc >= 0.022f && pasteIdx < pasteLen) {
+            licKey[pasteIdx] = pasteBuf[pasteIdx]; ++pasteIdx; licKey[pasteIdx] = 0; pasteAcc -= 0.022f;
+        }
+        if (pasteIdx >= pasteLen) { pasteActive = false; pastedFlash = 1.0f; licErr = false; }
+    }
 
     if (closing) { closeT += dt * 4.5f; if (closeT >= 1.0f) { closeT = 1.0f; ::PostMessage(hwnd, WM_CLOSE, 0, 0); closing = false; } }
     const float closeA = 1.0f - sm(closeT);
@@ -285,6 +332,10 @@
             ImGui::BeginDisabled(introGate < 0.95f);      // no clicks while the splash is up (alpha is set right after, so no dimming)
             style.Alpha = ent * fade; if (style.Alpha > 1.0f) style.Alpha = 1.0f;
             ImDrawList* dl = ImGui::GetWindowDrawList();
+            {
+                const ImVec2 wp0 = ImGui::GetWindowPos(), ws0 = ImGui::GetWindowSize();
+                drawAmbient(dl, ImVec2(wp0.x + 12.0f, wp0.y + 12.0f), ImVec2(wp0.x + ws0.x - 12.0f, wp0.y + ws0.y - 12.0f));
+            }
             const float cwid = ImGui::GetContentRegionAvail().x;
             const float rise = (1.0f - introGate) * 20.0f;
             ImGui::Dummy(ImVec2(0, rise));
@@ -310,7 +361,7 @@
                 ImGui::Dummy(ImVec2(cwid, bs + 52.0f + 18.0f + 24.0f));
             }
 
-            const bool locked = (ver != 0);
+            const bool locked = (ver != 0) || pasteActive || lockT > 0.0f;
 
             // key field (the library field floats its label above the text once something is typed)
             bool enter = false;
@@ -322,6 +373,29 @@
                     licErr = false;
                 if (Glass::FieldWasFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) enter = true;
                 ImGui::EndDisabled();
+                if (pastedFlash > 0.01f)
+                    dl->AddRect(gc, ImVec2(gc.x + gw, gc.y + fh), fa(pink, 0.85f * pastedFlash), 20.0f, 0, 1.8f);
+                if (!locked && licKey[0] == 0) {     // "Paste" chip inside the field
+                    const ImVec2 sv = ImGui::GetCursorScreenPos();
+                    const ImVec2 cs(64.0f, 28.0f), cmn(gc.x + gw - 14.0f - cs.x, gc.y + (fh - cs.y) * 0.5f);
+                    ImGui::SetCursorScreenPos(cmn);
+                    bool pc = ImGui::InvisibleButton("##paste", cs);
+                    bool hv = ImGui::IsItemHovered(), ac = ImGui::IsItemActive();
+                    ImVec2 cmx(cmn.x + cs.x, cmn.y + cs.y);
+                    dl->AddRectFilled(cmn, cmx, fa(pink, ac ? 0.34f : (hv ? 0.26f : 0.16f)), 14.0f);
+                    dl->AddRect(cmn, cmx, fa(pink, hv ? 0.55f : 0.30f), 14.0f, 0, 1.0f);
+                    float pw = textW(font_medium, 13.5f, "Paste");
+                    dl->AddText(font_medium, 13.5f, ImVec2((cmn.x + cmx.x) * 0.5f - pw * 0.5f, (cmn.y + cmx.y) * 0.5f - 8.0f), fa(pink), "Paste");
+                    ImGui::SetCursorScreenPos(sv);
+                    if (pc) {
+                        const char* cb = ImGui::GetClipboardText();
+                        int n = 0;
+                        if (cb) for (const char* q = cb; *q && n < 40; ++q) if ((unsigned char)*q >= 33 && (unsigned char)*q <= 126) pasteBuf[n++] = *q;
+                        pasteBuf[n] = 0;
+                        if (n == 0) Glass::Notify(Glass::Icon::WarnTriangle, IM_COL32(255, 159, 10, 255), "Clipboard", "Nothing to paste", "Copy your license key first.");
+                        else { pasteActive = true; pasteIdx = 0; pasteLen = n; pasteAcc = 0.0f; licKey[0] = 0; licErr = false; Glass::PlaySfx(Glass::Sfx::Tap); }
+                    }
+                }
                 if (ver == 1) {   // indeterminate sweep along the bottom edge while the key is being checked
                     float u = std::fmod(tNow * 0.85f, 1.0f), segW = gw * 0.34f;
                     float x = gc.x - segW + (gw + segW) * u;
@@ -344,7 +418,7 @@
                 static float errA = 0.0f;
                 errA += ((licErr ? 1.0f : 0.0f) - errA) * (dt * 12.0f > 1.0f ? 1.0f : dt * 12.0f);
                 if (errA > 0.01f) {
-                    const char* em = "Invalid license key";
+                    const char* em = errMsg;
                     float ew = textW(font_medium, 15.0f, em);
                     float slide = (1.0f - errA) * 8.0f;
                     ImU32 col = fa(pink, errA);
@@ -358,12 +432,19 @@
 
             // activate button: label + icon follow the check (Activate -> Checking -> Activated)
             const char* btnLabel = ver == 0 ? "Activate" : (ver == 1 ? "Checking license..." : "Activated");
+            static char lockLbl[40];
+            if (lockT > 0.0f) { std::snprintf(lockLbl, sizeof(lockLbl), "Try again in %ds", (int)std::ceil(lockT)); btnLabel = lockLbl; }
+            ImGui::BeginDisabled(lockT > 0.0f);
             bool go = Glass::Button(btnLabel, true, ImVec2(ImGui::GetContentRegionAvail().x, 52.0f));
+            ImGui::EndDisabled();
             {
                 ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
                 float tw = ImGui::CalcTextSize(btnLabel).x;
                 ImVec2 ic((mn.x + mx.x) * 0.5f - tw * 0.5f - 20.0f, (mn.y + mx.y) * 0.5f);
-                if (ver == 0) {
+                if (ver == 0 && lockT > 0.0f) {
+                    Glass::DrawIcon(dl, Glass::Icon::Key, ic, 20.0f, fa(white), 2.2f);
+                    dl->AddRectFilled(ImVec2(mn.x + 16.0f, mx.y - 7.0f), ImVec2(mn.x + 16.0f + (mx.x - mn.x - 32.0f) * (lockT / 15.0f), mx.y - 5.0f), fa(white, 0.55f), 2.0f);
+                } else if (ver == 0) {
                     Glass::DrawIcon(dl, Glass::Icon::CheckCircle, ic, 20.0f, fa(white), 2.4f);
                 } else if (ver == 1) {      // spinner
                     float a0 = tNow * 7.0f;
@@ -378,7 +459,7 @@
                     if (s1 > 0.0f) dl->AddLine(a, ImVec2(a.x + (b.x - a.x) * s1, a.y + (b.y - a.y) * s1), fa(pink), 2.4f);
                     if (s2 > 0.0f) dl->AddLine(b, ImVec2(b.x + (c2.x - b.x) * s2, b.y + (c2.y - b.y) * s2), fa(pink), 2.4f);
                 }
-                if (ver == 0) {   // light sweep across the idle button every few seconds
+                if (ver == 0 && lockT <= 0.0f) {   // light sweep across the idle button every few seconds
                     float ph = std::fmod(tNow, 3.6f) / 3.6f;
                     if (ph < 0.4f) {
                         float u = ph / 0.4f;
@@ -402,17 +483,24 @@
             }
 
             // ---- the check itself: a short, smooth "verifying" phase, then the result ----
-            if (ver == 0 && (go || enter)) {
-                ver = 1; verT = 0.0f; licErr = false;
-                Glass::PlaySfx(Glass::Sfx::Tap);
+            if (ver == 0 && lockT <= 0.0f && !pasteActive && (go || enter)) {
+                if (licKey[0] == 0) {
+                    licErr = true; shake = 0.7f; std::snprintf(errMsg, sizeof(errMsg), "Enter a license key");
+                    Glass::PlaySfx(Glass::Sfx::Error);
+                } else {
+                    ver = 1; verT = 0.0f; licErr = false;
+                    Glass::PlaySfx(Glass::Sfx::Tap);
+                }
             } else if (ver == 1) {
                 verT += dt;
                 if (verT >= 1.45f) {
                     if (_stricmp(licKey, kDemoKey) == 0) {
-                        ver = 2; verT = 0.0f;
+                        ver = 2; verT = 0.0f; fails = 0;
                         Glass::PlaySfx(Glass::Sfx::Success);
                     } else {
-                        ver = 0; licErr = true; shake = 1.0f;
+                        ver = 0; licErr = true; shake = 1.0f; ++fails;
+                        if (fails >= 3) { lockT = 15.0f; fails = 0; std::snprintf(errMsg, sizeof(errMsg), "Too many attempts"); }
+                        else std::snprintf(errMsg, sizeof(errMsg), "Invalid key - %d left", 3 - fails);
                         Glass::PlaySfx(Glass::Sfx::Error);
                     }
                 }
@@ -444,7 +532,11 @@
             const ImVec2 o = ImGui::GetCursorScreenPos();
             const float innerW = ImGui::GetContentRegionAvail().x;
             const float innerH = ImGui::GetContentRegionAvail().y;
-            const float slide = (1.0f - subA) * 22.0f;
+            const float slide = (1.0f - subA) * 22.0f + (1.0f - contentA) * 14.0f;
+            {
+                const ImVec2 wp0 = ImGui::GetWindowPos(), ws0 = ImGui::GetWindowSize();
+                drawAmbient(dl, ImVec2(wp0.x + 12.0f, wp0.y + 12.0f), ImVec2(wp0.x + ws0.x - 12.0f, wp0.y + ws0.y - 12.0f));
+            }
 
             // title bar: our mark (fades out while the island is open), window buttons on the right
             {
@@ -452,7 +544,24 @@
                 float la = 1.0f - 0.92f * islandE;
                 drawMark(dl, lc, 11.0f, 1.0f, fa(ink, la), fa(pink, la), 0.0f);
                 dl->AddLine(ImVec2(o.x - 8.0f, o.y + 42.0f), ImVec2(o.x + innerW + 8.0f, o.y + 42.0f), fa(ink, 0.10f), 1.0f);
+                // server indicator (demo: the ping is simulated)
+                {
+                    int ping = (int)(24.0f + 6.0f * std::sin(tNow * 0.7f) + 3.0f * std::sin(tNow * 2.3f) + 0.5f);
+                    char pb[32]; std::snprintf(pb, sizeof(pb), "Online - %d ms", ping);
+                    float pw = textW(font_medium, 13.0f, pb);
+                    float k = 1.0f - 0.85f * islandE;
+                    ImVec2 pmn(o.x + 2.0f, o.y + 4.0f), pmx(o.x + 2.0f + 30.0f + pw, o.y + 30.0f);
+                    dl->AddRectFilled(pmn, pmx, fa(ink, 0.06f * k), 13.0f);
+                    dl->AddRect(pmn, pmx, fa(ink, 0.10f * k), 13.0f, 0, 1.0f);
+                    ImVec2 dc(pmn.x + 14.0f, (pmn.y + pmx.y) * 0.5f);
+                    float ph = std::fmod(tNow, 1.8f) / 1.8f;
+                    dl->AddCircleFilled(dc, 3.6f, fa(okc, k), 14);
+                    dl->AddCircle(dc, 3.6f + ph * 7.0f, fa(okc, (1.0f - ph) * 0.5f * k), 20, 1.3f);
+                    dl->AddText(font_medium, 13.0f, ImVec2(pmn.x + 25.0f, pmn.y + 5.0f), fa(soft, k), pb);
+                }
             }
+            const float baseAlpha = style.Alpha;
+            style.Alpha = baseAlpha * contentA;       // inner content crossfades between menu and success
 
             if (stage == 1) {
                 const float sideW = 168.0f;
@@ -530,10 +639,27 @@
                 }
                 const char* labels[4] = { "Game", "Version", "Status", "Till Expiry" };
                 for (int i = 0; i < 4; ++i) {
-                    // each row swaps in with a small stagger when the product changes
-                    float e  = eo3((swapT - i * 0.12f) / 0.55f);
+                    // skeleton bars shimmer first, then each value reveals with a small stagger
+                    const float rs = 0.50f + i * 0.15f;
+                    float e  = eo3((loadT - rs) / 0.40f);
+                    float sk = 1.0f - sm((loadT - rs) / 0.18f);
                     float ry = panelY + 8.0f + rowH * i + (rowH - 17.0f) * 0.5f;
                     dl->AddText(font_medium, 16.0f, ImVec2(cx + 22.0f, ry), fa(soft), labels[i]);
+                    const float vr = cx + cw2 - 22.0f;
+
+                    if (sk > 0.01f) {
+                        static const float skW[4] = { 132.0f, 58.0f, 76.0f, 64.0f };
+                        const float sw = skW[i];
+                        ImVec2 a0(vr - sw, ry + 1.0f), a1(vr, ry + 16.0f);
+                        dl->AddRectFilled(a0, a1, fa(ink, 0.09f * sk), 7.0f);
+                        float u = std::fmod(tNow * 0.9f + i * 0.13f, 1.5f) / 1.5f;
+                        float x = a0.x - 30.0f + (sw + 60.0f) * u;
+                        dl->PushClipRect(a0, a1, true);
+                        dl->AddRectFilledMultiColor(ImVec2(x, a0.y), ImVec2(x + 15.0f, a1.y), fa(white, 0.0f), fa(white, 0.20f * sk), fa(white, 0.20f * sk), fa(white, 0.0f));
+                        dl->AddRectFilledMultiColor(ImVec2(x + 15.0f, a0.y), ImVec2(x + 30.0f, a1.y), fa(white, 0.20f * sk), fa(white, 0.0f), fa(white, 0.0f), fa(white, 0.20f * sk));
+                        dl->PopClipRect();
+                    }
+                    if (e <= 0.003f) continue;
 
                     char buf[48];
                     const char* val = buf;
@@ -543,7 +669,7 @@
                     else { std::snprintf(buf, sizeof(buf), "%d days", (int)(p.days * e + 0.5f)); }
 
                     ImVec2 vs = font_medium->CalcTextSizeA(16.0f, 99999.0f, 0.0f, val);
-                    float vx = cx + cw2 - 22.0f - vs.x + (1.0f - e) * 18.0f;
+                    float vx = vr - vs.x + (1.0f - e) * 18.0f;
                     ImU32 vcol = (i == 2) ? p.statusCol : ink;
                     dl->AddText(font_medium, 16.0f, ImVec2(vx, ry), fa(vcol, e), val);
 
@@ -553,11 +679,21 @@
                         dl->AddCircleFilled(dc, 3.6f, fa(p.statusCol, e), 16);
                         dl->AddCircle(dc, 3.6f + ph * 8.0f, fa(p.statusCol, (1.0f - ph) * 0.55f * e), 24, 1.4f);
                     }
+                    if (i == 3) {   // "days left" ring: green >= 10, amber <= 9, red <= 3
+                        ImU32 rc = p.days <= 3 ? IM_COL32(255, 85, 85, 255) : (p.days <= 9 ? IM_COL32(255, 200, 80, 255) : okc);
+                        float frac = (float)p.days / 30.0f; if (frac > 1.0f) frac = 1.0f;
+                        ImVec2 rcn(vx - 17.0f, ry + 9.0f);
+                        dl->AddCircle(rcn, 7.0f, fa(ink, 0.14f * e), 28, 2.4f);
+                        if (frac * e > 0.01f) {
+                            dl->PathArcTo(rcn, 7.0f, -kPi * 0.5f, -kPi * 0.5f + 2.0f * kPi * frac * e, 28);
+                            dl->PathStroke(fa(rc, e), 0, 2.4f);
+                        }
+                    }
                 }
 
                 // action button (stub)
                 ImGui::SetCursorScreenPos(ImVec2(cx, panelY + panelH + 14.0f));
-                const bool disabled = busy || strcmp(p.status, "Available") != 0;
+                const bool disabled = busy || loadT < 1.4f || strcmp(p.status, "Available") != 0;
                 if (!busy) {
                     bool clicked = Glass::Button(kActionText, true, ImVec2(cw2, 48.0f));
                     ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
@@ -576,7 +712,7 @@
                     }
                     if (clicked) {
                         if (!disabled) { busy = true; busyT = 0.0f; }
-                        else Glass::Notify(Glass::Icon::WarnTriangle, IM_COL32(255, 159, 10, 255), "Lumin", "Not available", "This product is not ready yet.");
+                        else if (loadT >= 1.4f) Glass::Notify(Glass::Icon::WarnTriangle, IM_COL32(255, 159, 10, 255), "Lumin", "Not available", "This product is not ready yet.");
                     }
                 } else {
                     busyT += dt * 0.55f;
@@ -744,6 +880,7 @@
                 if (okT > 3.2f) stage = 1;     // demo: return to the menu instead of quitting
             }
 
+            style.Alpha = baseAlpha;
             // window buttons (drawn last so they stay clickable); close plays a fade-out first
             {
                 float tlx = o.x + innerW - (3 * 13.0f + 2 * 8.0f) - 4.0f;
