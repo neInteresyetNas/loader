@@ -1,5 +1,5 @@
 #include <winver.h>
-1 ICON "lumin.ico"
+1 ICON "eclipse.ico"
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 1,2,0,0
  PRODUCTVERSION 1,2,0,0
@@ -10,11 +10,11 @@ BEGIN
   BEGIN
     BLOCK "040904b0"
     BEGIN
-      VALUE "FileDescription", "Lumin"
+      VALUE "FileDescription", "Eclipse"
       VALUE "FileVersion", "1.2.0.0"
-      VALUE "ProductName", "Lumin"
+      VALUE "ProductName", "Eclipse"
       VALUE "ProductVersion", "1.2.0.0"
-      VALUE "OriginalFilename", "Lumin.exe"
+      VALUE "OriginalFilename", "Eclipse.exe"
     END
   END
   BLOCK "VarFileInfo"

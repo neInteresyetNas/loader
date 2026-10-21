@@ -563,6 +563,8 @@ struct CardState { Material mat; size_t queue_index; float radius; };
 static std::vector<CardState> g_card_stack;
 
 static inline float Dt() { return ImGui::GetIO().DeltaTime; }
+static float g_cardFade = 1.0f;
+void SetCardFade(float f) { g_cardFade = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f); }
 
 bool BeginCard(const char* id, Material m, ImVec2 size) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(US(22 * g_density), US(20 * g_density)));
@@ -595,7 +597,7 @@ void EndCard() {
         Primitive& p = g->At(s.queue_index);
         p.cx = wp.x + ws.x * 0.5f; p.cy = wp.y + ws.y * 0.5f;
         p.hw = ws.x * 0.5f; p.hh = ws.y * 0.5f;
-        p.corner_radius = s.radius; p.fade = 1.0f; p.material = s.mat;
+        p.corner_radius = s.radius; p.fade = g_cardFade; p.material = s.mat;
     }
     ImGui::End();
     ImGui::PopStyleColor();

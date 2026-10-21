@@ -1,26 +1,26 @@
-// Lumin UI: intro -> license screen -> product menu -> success screen.
+// ECLIPSE - loader UI: intro splash -> license screen -> RAGE:MP product screen -> success screen.
 // Included from main.cpp inside the frame loop (needs: scale, ent, authA, style, io, cw, ch, win_w, win_h,
 // font_medium, font_semibold, g_glass_renderer, hwnd, logged_in, gShakeX, gUiCapture, appearance, profStatus, profTheme).
 //
-// UI ONLY. The "Inject" button is a visual stub: it plays a fake progress bar and shows the success
-// screen. It does not touch any process or file.
+// UI ONLY. The "Inject" button is a visual stub: a fake progress bar and a success screen.
+// It does not touch any process or file. The ping indicator is simulated too.
 {
     // ---- editable content --------------------------------------------------------------------
-    struct Prod { const char* name; const char* game; const char* version; const char* status; ImU32 statusCol; int days; };
-    static const Prod prods[3] = {
-        { "Alt:V",    "alt:V Multiplayer", "release", "Available", IM_COL32(110, 231, 130, 255), 29 },
-        { "Rage:MP",  "RAGE Multiplayer",  "release", "Updating",  IM_COL32(255, 200,  80, 255), 29 },
-        { "Deadlock", "Deadlock",          "beta",    "Available", IM_COL32(110, 231, 130, 255), 29 },
-    };
+    static const char* kBrand      = "ECLIPSE";
+    static const char* kProdName   = "RAGE:MP";
+    static const char* kProdGame   = "RAGE Multiplayer";
+    static const char* kProdVer    = "release";
+    static const char* kProdStatus = "Available";
+    static const ImU32 kStatusCol  = IM_COL32(110, 231, 130, 255);
+    static const int   kDays       = 29;
     static const char* kUserName   = "username";
     static const char* kUserTag    = "29 days";
-    static const char* kDemoKey    = "LUMIN-DEMO";      // the only key the demo accepts
+    static const char* kDemoKey    = "ECLIPSE-DEMO";    // demo key (the old LUMIN-DEMO is still accepted)
     static const char* kActionText = "Inject";          // button label (stub)
-    static const char* kVersion    = "v1.2.0";
+    static const char* kVersion    = "v2.0.0";
     // -------------------------------------------------------------------------------------------
 
     static int   stage = 0;                 // 0 license, 1 menu, 2 success
-    static int   sel = 0, lastSel = 0;
     static char  licKey[64] = "";
     static bool  licErr = false;
     static bool  remember = false;
@@ -36,6 +36,8 @@
     static char  errMsg[40] = "Invalid license key";
     static bool  pasteActive = false; static int pasteIdx = 0, pasteLen = 0; static float pasteAcc = 0.0f, pastedFlash = 0.0f;
     static char  pasteBuf[48] = "";
+    static bool  autoFocus = false;
+    static float licW = 0.0f, licH = 0.0f;  // last measured size of the license card (the intro grows into it)
     static bool  closing = false; static float closeT = 0.0f;
     static bool  loadedSaved = false, welcomePending = false;
     static float introT = 0.0f;
@@ -48,19 +50,26 @@
     const float tNow = (float)ImGui::GetTime();
     const float kPi  = 3.14159265f;
     gUiCapture = false;
+    const bool lightMode = (appearance == 1);
 
-    const ImU32 ink   = Glass::InkColor();       // follows the light / dark theme
-    const ImU32 soft  = Glass::InkSoftColor();
-    const ImU32 pink  = IM_COL32(232, 104, 128, 255);
+    const ImU32 ink    = Glass::InkColor();       // follows the light / dark theme
+    const ImU32 soft   = Glass::InkSoftColor();
+    const ImU32 pink   = IM_COL32(240, 92, 128, 255);
     const ImU32 violet = IM_COL32(140, 110, 255, 255);
-    const ImU32 okc   = IM_COL32(52, 209, 88, 255);
-    const ImU32 white = IM_COL32(255, 255, 255, 255);
+    const ImU32 amber  = IM_COL32(255, 170, 90, 255);
+    const ImU32 okc    = IM_COL32(52, 209, 88, 255);
+    const ImU32 white  = IM_COL32(255, 255, 255, 255);
+
+    const float dashW = (float)win_w - 92.0f;
+    const float dashH = (float)win_h - 92.0f;
+    if (licW <= 0.0f) { licW = 404.0f * scale; licH = 470.0f * scale; }
 
     // ---- tiny helpers ------------------------------------------------------------------------
     auto sat01 = [](float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); };
     auto eo3   = [&](float x) { x = sat01(x); float u = 1.0f - x; return 1.0f - u * u * u; };
     auto sm    = [&](float x) { x = sat01(x); return x * x * (3.0f - 2.0f * x); };
     auto eob   = [&](float x) { x = sat01(x); const float c1 = 1.70158f, c3 = c1 + 1.0f; float u = x - 1.0f; return 1.0f + c3 * u * u * u + c1 * u * u; };
+    auto lerpf = [](float a, float b, float t) { return a + (b - a) * t; };
     // colour with extra alpha multiplier AND the current style alpha (raw draw-list colours ignore it)
     auto fa = [&](ImU32 c, float a = 1.0f) {
         float al = (float)((c >> 24) & 0xFF) / 255.0f * a * style.Alpha;
@@ -78,8 +87,119 @@
         return (ImU32)((chn(0)) | (chn(8) << 8) | (chn(16) << 16) | (chn(24) << 24));
     };
     auto textW = [&](ImFont* f, float size, const char* t) { return f->CalcTextSizeA(size, 99999.0f, 0.0f, t).x; };
+    // letter-spaced text, centred on cx
+    auto trackedC = [&](ImDrawList* d, ImFont* f, float size, float cx, float y, const char* t, float sp, ImU32 col) {
+        float total = 0.0f; int n = 0;
+        for (const char* q = t; *q; ++q) { char b[2] = { *q, 0 }; total += textW(f, size, b) + sp; ++n; }
+        total -= sp;
+        float x = cx - total * 0.5f;
+        for (const char* q = t; *q; ++q) { char b[2] = { *q, 0 }; d->AddText(f, size, ImVec2(x, y), col, b); x += textW(f, size, b) + sp; }
+    };
 
-    // soft drifting glow orbs + twinkling dust (decor only), clipped to the card
+    // ---- the Eclipse mark: a glowing corona ring around a dark sphere, a flare lands on the rim ----
+    // p = build progress 0..1. al = alpha multiplier (callers pass style.Alpha or the splash alpha).
+    auto corona = [&](float f) { return f < 0.5f ? mix(amber, pink, f * 2.0f) : mix(pink, violet, (f - 0.5f) * 2.0f); };
+    auto drawEclipse = [&](ImDrawList* d, ImVec2 c, float R, float p, float al) {
+        const float dirA = -kPi * 0.25f;
+        const float po = eo3(p / 0.6f), ps = eob((p - 0.15f) / 0.45f), pf = sat01((p - 0.65f) / 0.35f);
+        for (int k = 0; k < 6; ++k)
+            d->AddCircleFilled(c, R * (1.0f + k * 0.17f), mulA(pink, 0.070f * (1.0f - k / 6.0f) * ps * al), 48);
+        const float th = R * 0.20f;
+        const int N = 56;
+        const float rot = tNow * 0.35f;
+        for (int i = 0; i < N; ++i) {
+            float f0 = (float)i / N;
+            if (f0 >= po) break;
+            float a0 = dirA + rot + f0 * 2.0f * kPi, a1 = a0 + 2.0f * kPi / N + 0.03f;
+            float lw = th * (0.55f + 0.65f * std::max(0.0f, std::cos(a0 - rot - dirA)));
+            d->PathArcTo(c, R, a0, a1, 3);
+            d->PathStroke(mulA(corona(f0), al), 0, lw);
+        }
+        if (ps > 0.01f) {
+            const float r = R * 0.80f * ps;
+            d->AddCircleFilled(c, r, mulA(IM_COL32(12, 10, 22, 255), al), 56);
+            for (int k = 0; k < 9; ++k) {
+                float f = k / 8.0f, rr = r * (0.96f - f * 0.62f);
+                ImVec2 cc(c.x - r * 0.30f * f, c.y - r * 0.34f * f);
+                d->AddCircleFilled(cc, rr, mulA(mix(IM_COL32(50, 30, 96, 255), IM_COL32(150, 80, 170, 255), f), (0.12f + 0.10f * f) * al), 40);
+            }
+            d->AddCircle(c, r, mulA(white, 0.12f * al), 56, 1.2f);
+        }
+        if (pf > 0.0f) {
+            ImVec2 fp(c.x + std::cos(dirA) * R, c.y + std::sin(dirA) * R);
+            float L = R * 0.55f * eo3(pf) * (0.75f + 0.25f * std::sin(tNow * 3.0f));
+            for (int k = 0; k < 4; ++k) d->AddCircleFilled(fp, R * 0.10f * (1.8f + k * 1.2f), mulA(amber, (0.16f - k * 0.035f) * al), 24);
+            d->AddLine(ImVec2(fp.x - L, fp.y), ImVec2(fp.x + L, fp.y), mulA(white, 0.55f * al), 1.4f);
+            d->AddLine(ImVec2(fp.x, fp.y - L), ImVec2(fp.x, fp.y + L), mulA(white, 0.55f * al), 1.4f);
+            d->AddCircleFilled(fp, R * 0.115f * eo3(pf), mulA(white, al), 20);
+        }
+    };
+
+    // ---- 3D product emblem: dark orb with lighting, tilted orbit ring (back half / front half), bolt, shards ----
+    auto drawEmblem = [&](ImDrawList* d, ImVec2 ec, float Rs, float px, float py, float al) {
+        const float bob = std::sin(tNow * 1.3f) * 4.0f;
+        const ImVec2 sc(ec.x + px * 5.0f, ec.y + bob + py * 5.0f);
+        // floor shadow (shrinks while the orb floats up)
+        {
+            float sh = 1.0f - bob * 0.02f;
+            for (int k = 0; k < 4; ++k)
+                d->AddEllipseFilled(ImVec2(ec.x + px * 2.0f, ec.y + Rs * 1.62f), ImVec2(Rs * (1.05f - k * 0.17f) * sh, 8.0f - k * 1.6f), mulA(pink, 0.07f * al));
+        }
+        // glow behind
+        for (int k = 0; k < 8; ++k)
+            d->AddCircleFilled(sc, Rs * (1.05f + k * 0.20f), mulA((k % 2) ? violet : pink, 0.050f * (1.0f - k / 8.0f) * al), 48);
+        // orbit ring geometry
+        const float tl = -0.38f, ct = std::cos(tl), st = std::sin(tl), rx = Rs * 1.50f, ry = Rs * 0.42f;
+        auto orb = [&](float a) { float x = rx * std::cos(a), y = ry * std::sin(a); return ImVec2(sc.x + x * ct - y * st, sc.y + x * st + y * ct); };
+        auto ringHalf = [&](float a0, float a1, float alpha) {
+            for (int pass = 0; pass < 2; ++pass) {
+                for (int i = 0; i <= 36; ++i) d->PathLineTo(orb(a0 + (a1 - a0) * i / 36.0f));
+                d->PathStroke(mulA(pass == 0 ? violet : mix(pink, violet, 0.4f), (pass == 0 ? 0.16f : 1.0f) * alpha * al), 0, pass == 0 ? 7.0f : 2.2f);
+            }
+        };
+        const float ba = tNow * 0.9f, bs = std::sin(ba);
+        ringHalf(kPi, 2.0f * kPi, 0.38f);                       // behind the orb
+        if (bs < 0.0f) { ImVec2 b = orb(ba); d->AddCircleFilled(b, 9.0f, mulA(amber, 0.16f * al), 16); d->AddCircleFilled(b, 3.4f, mulA(amber, 0.7f * al), 12); }
+        // the orb
+        d->AddCircleFilled(sc, Rs, mulA(IM_COL32(15, 12, 28, 255), al), 64);
+        for (int k = 0; k < 10; ++k) {
+            float f = k / 9.0f, rr = Rs * (0.97f - f * 0.64f);
+            ImVec2 cc(sc.x - Rs * 0.32f * f, sc.y - Rs * 0.36f * f);
+            d->AddCircleFilled(cc, rr, mulA(mix(IM_COL32(64, 38, 120, 255), IM_COL32(255, 130, 160, 255), f), (0.11f + 0.12f * f) * al), 48);
+        }
+        d->PathArcTo(sc, Rs - 1.0f, 0.15f, 1.55f, 24); d->PathStroke(mulA(violet, 0.65f * al), 0, 2.2f);
+        d->PathArcTo(sc, Rs - 1.0f, kPi * 1.05f, kPi * 1.65f, 24); d->PathStroke(mulA(white, 0.30f * al), 0, 1.6f);
+        d->AddCircleFilled(ImVec2(sc.x - Rs * 0.40f, sc.y - Rs * 0.44f), Rs * 0.085f, mulA(white, 0.55f * al), 16);
+        // bolt
+        {
+            const ImVec2 bc(sc.x + px * 9.0f, sc.y + py * 9.0f + std::sin(tNow * 1.7f) * 2.0f);
+            const float s = Rs * 0.44f;
+            for (int k = 0; k < 4; ++k) d->AddCircleFilled(bc, s * (0.9f + k * 0.45f), mulA(pink, 0.075f * (1.0f - k / 4.0f) * al), 32);
+            static const float bx[6] = { 0.18f, -0.55f, -0.02f, -0.20f, 0.55f, 0.04f };
+            static const float by[6] = { -1.00f, 0.12f, 0.12f, 1.00f, -0.18f, -0.18f };
+            for (int k = 0; k < 6; ++k) d->PathLineTo(ImVec2(bc.x + bx[k] * s, bc.y + by[k] * s));
+            d->PathFillConcave(mulA(mix(white, IM_COL32(255, 205, 220, 255), 0.45f), 0.97f * al));
+        }
+        ringHalf(0.0f, kPi, 0.95f);                              // in front of the orb
+        if (bs >= 0.0f) { ImVec2 b = orb(ba); d->AddCircleFilled(b, 10.0f, mulA(amber, 0.18f * al), 16); d->AddCircleFilled(b, 3.8f, mulA(white, 0.95f * al), 12); }
+        // floating shards (parallax)
+        for (int i = 0; i < 7; ++i) {
+            float a = tNow * (0.22f + 0.05f * i) + i * 0.9f, rad = Rs * (1.30f + 0.13f * (i % 3));
+            ImVec2 sp(ec.x + std::cos(a) * rad * 1.15f + px * (8.0f + i * 2.0f), ec.y + std::sin(a) * rad * 0.62f + py * (8.0f + i * 2.0f));
+            float sz = 2.2f + (i % 3) * 1.1f, tw = 0.5f + 0.5f * std::sin(tNow * 1.6f + i * 1.7f);
+            ImU32 c = mulA((i % 2) ? pink : violet, (0.25f + 0.55f * tw) * al);
+            d->AddQuadFilled(ImVec2(sp.x - sz, sp.y), ImVec2(sp.x, sp.y - sz * 1.4f), ImVec2(sp.x + sz, sp.y), ImVec2(sp.x, sp.y + sz * 1.4f), c);
+        }
+    };
+
+    // dark / light tinted glass base + soft drifting glow orbs and dust (card decor)
+    auto drawTint = [&](ImDrawList* d, ImVec2 mn, ImVec2 mx, float rad) {
+        const ImU32 bgc = lightMode ? IM_COL32(246, 247, 252, 255) : IM_COL32(10, 11, 18, 255);
+        d->AddRectFilled(mn, mx, fa(bgc, lightMode ? 0.55f : 0.64f), rad);
+        d->AddRectFilledMultiColor(ImVec2(mn.x + rad * 0.5f, mn.y + 1.0f), ImVec2(mx.x - rad * 0.5f, mn.y + (mx.y - mn.y) * 0.30f),
+                                   fa(white, lightMode ? 0.30f : 0.045f), fa(white, lightMode ? 0.30f : 0.045f), fa(white, 0.0f), fa(white, 0.0f));
+        d->AddRect(mn, mx, fa(lightMode ? IM_COL32(0, 0, 0, 255) : white, lightMode ? 0.10f : 0.11f), rad, 0, 1.0f);
+    };
     auto drawAmbient = [&](ImDrawList* d, ImVec2 mn, ImVec2 mx) {
         const float w = mx.x - mn.x, h = mx.y - mn.y;
         d->PushClipRect(mn, mx, true);
@@ -89,7 +209,7 @@
             const ImU32 col = (o == 1) ? violet : pink;
             const float rad = (w < h ? w : h) * (0.34f + 0.05f * o);
             for (int k = 0; k < 8; ++k)
-                d->AddCircleFilled(c, rad * (0.30f + k * 0.10f), fa(col, 0.020f * (1.0f - k / 8.0f)), 40);
+                d->AddCircleFilled(c, rad * (0.30f + k * 0.10f), fa(col, 0.024f * (1.0f - k / 8.0f)), 40);
         }
         for (int i = 0; i < 24; ++i) {
             float r1 = std::fmod(std::fabs(std::sin(i * 12.9898f) * 43758.5f), 1.0f);
@@ -104,78 +224,63 @@
         d->PopClipRect();
     };
 
-    // ---- the Lumin mark: two broken rings + a spark of light that lands in the gap -------------
-    // p = build progress 0..1 (1 = finished logo). cm = main colour, ca = accent colour.
-    auto drawMark = [&](ImDrawList* d, ImVec2 c, float R, float p, ImU32 cm, ImU32 ca, float flash) {
-        const float gap = 0.52f, dirA = -kPi * 0.25f;
-        float th = R * 0.15f; if (th < 1.8f) th = 1.8f;
-        float po = eo3(p / 0.55f);
-        if (po > 0.004f) {
-            float a0 = dirA + gap, a1 = a0 + (2.0f * kPi - 2.0f * gap) * po;
-            d->PathArcTo(c, R, a0, a1, 64);
-            d->PathStroke(cm, 0, th);
+    // primary button drawn by us (soft glow, top highlight, hover / press springs). Returns true on click.
+    auto pbtn = [&](const char* id, ImVec2 pos, ImVec2 sz, bool enabled, ImVec2& omn, ImVec2& omx) {
+        ImGui::SetCursorScreenPos(pos);
+        ImGui::PushID(id);
+        bool clicked = ImGui::InvisibleButton("##b", sz);
+        bool hov = ImGui::IsItemHovered() && enabled, act = ImGui::IsItemActive() && enabled;
+        ImGuiStorage* stg = ImGui::GetStateStorage();
+        float& hv = *stg->GetFloatRef(ImGui::GetID("hv"), 0.0f);
+        float& pr = *stg->GetFloatRef(ImGui::GetID("pr"), 0.0f);
+        float k = sat01(dt * 14.0f);
+        hv += ((hov ? 1.0f : 0.0f) - hv) * k; pr += ((act ? 1.0f : 0.0f) - pr) * k;
+        ImDrawList* d = ImGui::GetWindowDrawList();
+        const float sh = pr * 2.2f;
+        ImVec2 mn(pos.x + sh, pos.y + sh * 0.6f), mx(pos.x + sz.x - sh, pos.y + sz.y - sh * 0.6f);
+        const float r = 17.0f;
+        if (enabled) {
+            for (int q = 1; q <= 4; ++q)
+                d->AddRectFilled(ImVec2(mn.x - q * 3.0f, mn.y - q * 2.0f + 3.0f), ImVec2(mx.x + q * 3.0f, mx.y + q * 3.0f + 3.0f), fa(pink, (0.045f + 0.07f * hv) * (1.0f - q / 5.0f)), r + q * 3.0f);
+            d->AddRectFilled(mn, mx, fa(mix(IM_COL32(214, 58, 104, 255), IM_COL32(248, 112, 100, 255), 0.25f + 0.55f * hv)), r);
+            d->AddRectFilled(mn, ImVec2(mx.x, (mn.y + mx.y) * 0.5f), fa(white, 0.15f), r, ImDrawFlags_RoundCornersTop);
+            d->AddRect(mn, mx, fa(white, 0.28f), r, 0, 1.0f);
+        } else {
+            d->AddRectFilled(mn, mx, fa(ink, 0.10f), r);
+            d->AddRect(mn, mx, fa(ink, 0.10f), r, 0, 1.0f);
         }
-        float pi2 = eo3((p - 0.2f) / 0.5f);
-        if (pi2 > 0.004f) {
-            float g2 = 0.62f, b0 = dirA + kPi + g2, b1 = b0 + (2.0f * kPi - 2.0f * g2) * pi2;
-            d->PathArcTo(c, R * 0.58f, b0, b1, 48);
-            d->PathStroke(mulA(ca, 0.95f), 0, th * 0.62f);
-        }
-        float q = sat01((p - 0.55f) / 0.35f);
-        if (q > 0.0f) {
-            float dist = R * (1.0f + (1.0f - eo3(q)) * 2.6f);
-            ImVec2 dp(c.x + std::cos(dirA) * dist, c.y + std::sin(dirA) * dist);
-            float rr = R * 0.17f * (0.55f + 0.45f * eo3(q));
-            for (int k = 0; k < 4; ++k)
-                d->AddCircleFilled(dp, rr * (1.8f + k * 1.1f), mulA(ca, (0.16f - k * 0.035f) * (0.5f + 0.5f * q + flash)), 32);
-            d->AddCircleFilled(dp, rr, cm, 24);
-        }
-        float o2 = eob((p - 0.8f) / 0.2f);
-        if (o2 > 0.0f) d->AddCircleFilled(c, R * 0.12f * o2, ca, 20);
+        ImGui::PopID();
+        omn = mn; omx = mx;
+        return clicked && enabled;
     };
-
-    // ---- our own sidebar icons (hand-drawn vectors, one per product) ---------------------------
-    auto prodIcon = [&](ImDrawList* d, int i, ImVec2 c, float s, ImU32 col) {
-        const float th = 2.1f;
-        if (i == 0) {                                   // Alt:V - hexagon with a V
-            for (int k = 0; k < 6; ++k) {
-                float a = -kPi * 0.5f + k * kPi / 3.0f;
-                d->PathLineTo(ImVec2(c.x + std::cos(a) * s, c.y + std::sin(a) * s));
-            }
-            d->PathStroke(col, ImDrawFlags_Closed, th);
-            ImVec2 l(c.x - 0.40f * s, c.y - 0.22f * s), m(c.x, c.y + 0.38f * s), r(c.x + 0.40f * s, c.y - 0.22f * s);
-            d->AddLine(l, m, col, th); d->AddLine(m, r, col, th);
-        } else if (i == 1) {                            // Rage:MP - lightning bolt
-            static const float bx[6] = { 0.18f, -0.55f, -0.02f, -0.20f, 0.55f, 0.04f };
-            static const float by[6] = { -1.00f, 0.12f, 0.12f, 1.00f, -0.18f, -0.18f };
-            for (int k = 0; k < 6; ++k) d->PathLineTo(ImVec2(c.x + bx[k] * s, c.y + by[k] * s));
-            d->PathFillConcave(col);
-        } else {                                        // Deadlock - padlock
-            d->AddRect(ImVec2(c.x - 0.78f * s, c.y - 0.05f * s), ImVec2(c.x + 0.78f * s, c.y + 0.95f * s), col, 0.22f * s, 0, th);
-            d->PathArcTo(ImVec2(c.x, c.y - 0.05f * s), 0.5f * s, kPi, 2.0f * kPi, 16);
-            d->PathStroke(col, 0, th);
-            d->AddCircleFilled(ImVec2(c.x, c.y + 0.42f * s), 0.13f * s + 0.6f, col, 12);
-        }
+    auto sweep = [&](ImDrawList* d, ImVec2 mn, ImVec2 mx, float period, float frac) {
+        float ph = std::fmod(tNow, period) / period;
+        if (ph >= frac) return;
+        float u = ph / frac, bw2 = 30.0f, x = mn.x - 2.0f * bw2 + (mx.x - mn.x + 4.0f * bw2) * u;
+        d->PushClipRect(ImVec2(mn.x + 4.0f, mn.y + 4.0f), ImVec2(mx.x - 4.0f, mx.y - 4.0f), true);
+        d->AddRectFilledMultiColor(ImVec2(x, mn.y), ImVec2(x + bw2, mx.y), fa(white, 0.0f), fa(white, 0.18f), fa(white, 0.18f), fa(white, 0.0f));
+        d->AddRectFilledMultiColor(ImVec2(x + bw2, mn.y), ImVec2(x + 2.0f * bw2, mx.y), fa(white, 0.18f), fa(white, 0.0f), fa(white, 0.0f), fa(white, 0.18f));
+        d->PopClipRect();
     };
 
     // ---- state machines ----------------------------------------------------------------------
     if (introT < 4.0f) introT += dt;
-    // click / Enter skips the intro once it is running
-    if (introT > 0.7f && introT < 3.0f && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter, false)))
-        introT = 3.0f;
-    const float introGate = sm((introT - 3.0f) / 0.7f);   // the card stays hidden until the splash has faded
+    // click / Enter skips to the grow-into-window part of the intro
+    if (introT > 0.7f && introT < 2.5f && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter, false)))
+        introT = 2.5f;
+    const float introGate = sm((introT - 3.2f) / 0.7f);   // the card fades in while the splash panel melts into it
 
     // "Remember me": restore a saved key once, at launch
     if (!loadedSaved) {
         loadedSaved = true;
         if (LuminStore::Load(licKey, (int)sizeof(licKey))) {
             remember = true;
-            if (_stricmp(licKey, kDemoKey) == 0) { stage = 1; logged_in = true; welcomePending = true; }
+            if (_stricmp(licKey, kDemoKey) == 0 || _stricmp(licKey, "LUMIN-DEMO") == 0) { stage = 1; logged_in = true; welcomePending = true; }
         }
     }
-    if (welcomePending && introT > 3.4f) {
+    if (welcomePending && introT > 3.6f) {
         welcomePending = false;
-        Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Lumin", "Welcome back", "You are signed in.");
+        Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Eclipse", "Welcome back", "You are signed in.");
     }
 
     if (stage != lastStage) {
@@ -188,8 +293,6 @@
     const float subA = sm(subT);
     contentT += dt * 3.0f; if (contentT > 1.0f) contentT = 1.0f;
     const float contentA = sm(contentT);
-
-    if (sel != lastSel) { lastSel = sel; loadT = 0.0f; }
     loadT += dt * 1.25f; if (loadT > 2.0f) loadT = 2.0f;
 
     if (lockT > 0.0f) { lockT -= dt; if (lockT <= 0.0f) { lockT = 0.0f; licErr = false; } }
@@ -217,37 +320,41 @@
     };
 
     // =========================================================================================
-    //  INTRO: the mark builds itself, a spark lands in the gap, LUMIN rises letter by letter
+    //  INTRO: the mark builds itself, ECLIPSE rises letter by letter, then the dark panel
+    //  grows until it fills the window and becomes the app background.
     // =========================================================================================
     {
-        const float sa = 1.0f - sm((introT - 3.0f) / 0.6f);
+        const float sa = 1.0f - sm((introT - 3.3f) / 0.6f);
         if (sa > 0.003f) {
             ImDrawList* fd = ImGui::GetForegroundDrawList();
             const float t = introT;
             const float pcx = (float)cw * 0.5f, pcy = (float)ch * 0.5f;
-            auto A = [&](ImU32 c, float a = 1.0f) {   // splash alpha only (the splash ignores style.Alpha)
+            const float cf = 1.0f - sm((t - 2.5f) / 0.4f);                 // content fades while the panel grows
+            auto A = [&](ImU32 c, float a = 1.0f) {                         // splash alpha only (the splash ignores style.Alpha)
                 float al = (float)((c >> 24) & 0xFF) / 255.0f * a * sa;
                 al = sat01(al);
                 return (ImU32)((c & 0x00FFFFFF) | ((ImU32)(al * 255.0f + 0.5f) << 24));
             };
             const float panelIn = eo3(t / 0.55f);
-            const float pscale = (0.955f + 0.045f * panelIn) + 0.03f * sm((t - 3.0f) / 0.6f);
-            const float W = 470.0f * pscale, H = 350.0f * pscale;
+            const float ex = sm((t - 2.55f) / 0.95f);
+            const float tgtW = (stage == 0) ? 404.0f * scale : dashW;
+            const float tgtH = (stage == 0) ? licH : dashH;
+            const float pscale = 0.955f + 0.045f * panelIn;
+            const float W = lerpf(470.0f * pscale, tgtW, ex), H = lerpf(350.0f * pscale, tgtH, ex);
+            const float rad = lerpf(32.0f, 26.0f * scale, ex);
             const ImVec2 pmin(pcx - W * 0.5f, pcy - H * 0.5f), pmax(pcx + W * 0.5f, pcy + H * 0.5f);
 
-            // soft drop shadow + panel
             for (int k = 3; k >= 1; --k)
                 fd->AddRectFilled(ImVec2(pmin.x - k * 5.0f, pmin.y - k * 3.0f), ImVec2(pmax.x + k * 5.0f, pmax.y + k * 7.0f),
-                                  A(IM_COL32(0, 0, 0, 255), 0.07f * panelIn), 34.0f + k * 4.0f);
-            fd->AddRectFilled(pmin, pmax, A(IM_COL32(9, 10, 14, 247), panelIn), 32.0f);
+                                  A(IM_COL32(0, 0, 0, 255), 0.07f * panelIn * (1.0f - ex)), rad + k * 4.0f);
+            fd->AddRectFilled(pmin, pmax, A(IM_COL32(9, 10, 16, 247), panelIn), rad);
 
             const ImVec2 lc(pcx, pcy - 52.0f);
             const float R = 44.0f;
 
-            // drifting aurora inside the panel (clipped to it)
             fd->PushClipRect(pmin, pmax, true);
             {
-                float gi = sat01(t / 1.0f);
+                float gi = sat01(t / 1.0f) * (1.0f - 0.6f * ex);
                 ImVec2 g1(pcx - 80.0f + 26.0f * std::sin(t * 0.9f), lc.y + 6.0f + 12.0f * std::cos(t * 0.7f));
                 ImVec2 g2(pcx + 90.0f + 24.0f * std::cos(t * 0.8f), lc.y + 40.0f + 14.0f * std::sin(t * 0.6f));
                 for (int k = 0; k < 9; ++k) {
@@ -257,67 +364,57 @@
                 }
             }
             fd->PopClipRect();
-            fd->AddRect(pmin, pmax, A(white, 0.10f * panelIn), 32.0f, 0, 1.0f);
-            fd->AddLine(ImVec2(pmin.x + 34.0f, pmin.y + 1.0f), ImVec2(pmax.x - 34.0f, pmin.y + 1.0f), A(white, 0.16f * panelIn), 1.0f);
+            fd->AddRect(pmin, pmax, A(white, 0.10f * panelIn), rad, 0, 1.0f);
 
-            // orbiting specks of light
-            {
-                float vis = sat01((t - 0.9f) / 0.8f);
-                for (int i = 0; i < 12; ++i) {
-                    float sp = 0.25f + (i % 4) * 0.09f;
-                    float ang = i * 0.5236f * 1.7f + t * sp * (i % 2 ? 1.0f : -1.0f);
-                    float rad = R * (1.85f + (i % 5) * 0.28f);
-                    float tw = 0.5f + 0.5f * std::sin(t * 2.0f + i * 1.3f);
-                    fd->AddCircleFilled(ImVec2(lc.x + std::cos(ang) * rad, lc.y + std::sin(ang) * rad * 0.8f), 1.1f + (i % 3) * 0.5f,
-                                        A((i % 3 == 0) ? violet : pink, (0.18f + 0.40f * tw) * vis), 10);
+            if (cf > 0.003f) {
+                {   // orbiting specks of light
+                    float vis = sat01((t - 0.9f) / 0.8f) * cf;
+                    for (int i = 0; i < 12; ++i) {
+                        float sp = 0.25f + (i % 4) * 0.09f;
+                        float ang = i * 0.5236f * 1.7f + t * sp * (i % 2 ? 1.0f : -1.0f);
+                        float rr = R * (1.85f + (i % 5) * 0.28f);
+                        float tw = 0.5f + 0.5f * std::sin(t * 2.0f + i * 1.3f);
+                        fd->AddCircleFilled(ImVec2(lc.x + std::cos(ang) * rr, lc.y + std::sin(ang) * rr * 0.8f), 1.1f + (i % 3) * 0.5f,
+                                            A((i % 3 == 0) ? violet : pink, (0.18f + 0.40f * tw) * vis), 10);
+                    }
                 }
-            }
-
-            // the mark
-            const float p = sat01((t - 0.15f) / 1.45f);
-            const float tLand = 0.15f + 1.45f * 0.9f;
-            float flash = (t > tLand) ? std::exp(-5.0f * (t - tLand)) * 1.4f : 0.0f;
-            {   // glow behind the mark
-                float gin = sat01(t / 1.1f) * (0.80f + 0.20f * std::sin(t * 3.0f)) + flash * 0.5f;
-                for (int k = 0; k < 7; ++k)
-                    fd->AddCircleFilled(lc, R + 6.0f + k * 9.0f, A(pink, 0.070f * (1.0f - k / 7.0f) * gin), 48);
-            }
-            drawMark(fd, lc, R, p, A(white, 0.97f), A(pink), flash);
-            {   // shockwave when the spark lands
-                float tt = (t - tLand) / 0.8f;
-                if (tt > 0.0f && tt < 1.0f) {
-                    fd->AddCircle(lc, R * 1.05f + eo3(tt) * R * 2.8f, A(pink, (1.0f - tt) * 0.45f), 72, 2.0f);
-                    fd->AddCircle(lc, R * 1.05f + eo3(tt - 0.12f) * R * 2.1f, A(white, (1.0f - tt) * 0.16f), 72, 1.2f);
+                const float p = sat01((t - 0.15f) / 1.5f);
+                const float tLand = 0.15f + 1.5f * 0.8f;
+                drawEclipse(fd, lc, R, p, sa * cf);
+                {   // shockwave when the flare lands
+                    float tt = (t - tLand) / 0.8f;
+                    if (tt > 0.0f && tt < 1.0f) {
+                        fd->AddCircle(lc, R * 1.1f + eo3(tt) * R * 2.8f, A(pink, (1.0f - tt) * 0.45f * cf), 72, 2.0f);
+                        fd->AddCircle(lc, R * 1.1f + eo3(tt - 0.12f) * R * 2.1f, A(white, (1.0f - tt) * 0.16f * cf), 72, 1.2f);
+                    }
                 }
-            }
-
-            // LUMIN, letter by letter (tracking tightens as it settles)
-            {
-                static const char* letters[5] = { "L", "U", "M", "I", "N" };
-                const float fs = 36.0f;
-                const float spacing = 11.0f + 12.0f * (1.0f - eo3((t - 1.2f) / 1.1f));
-                float wl[5], total = 0.0f;
-                for (int i = 0; i < 5; ++i) { wl[i] = textW(font_semibold, fs, letters[i]); total += wl[i]; }
-                total += spacing * 4.0f;
-                float x = pcx - total * 0.5f, y = pcy + 34.0f;
-                for (int i = 0; i < 5; ++i) {
-                    float e = eo3((t - 1.2f - i * 0.085f) / 0.55f);
-                    if (e > 0.003f)
-                        fd->AddText(font_semibold, fs, ImVec2(x, y + (1.0f - e) * 20.0f), A(IM_COL32(242, 243, 248, 255), e), letters[i]);
-                    x += wl[i] + spacing;
+                {   // ECLIPSE, letter by letter (tracking tightens as it settles)
+                    const int n = (int)strlen(kBrand);
+                    const float fs = 32.0f;
+                    const float spacing = 9.0f + 12.0f * (1.0f - eo3((t - 1.2f) / 1.1f));
+                    float wl[16], total = 0.0f;
+                    for (int i = 0; i < n; ++i) { char b[2] = { kBrand[i], 0 }; wl[i] = textW(font_semibold, fs, b); total += wl[i]; }
+                    total += spacing * (n - 1);
+                    float x = pcx - total * 0.5f, y = pcy + 34.0f;
+                    for (int i = 0; i < n; ++i) {
+                        char b[2] = { kBrand[i], 0 };
+                        float e = eo3((t - 1.2f - i * 0.075f) / 0.55f);
+                        if (e > 0.003f)
+                            fd->AddText(font_semibold, fs, ImVec2(x, y + (1.0f - e) * 20.0f), A(IM_COL32(242, 243, 248, 255), e * cf), b);
+                        x += wl[i] + spacing;
+                    }
                 }
-            }
-            // progress hairline + caption
-            {
-                const float bw = 196.0f, bx = pcx - bw * 0.5f, by = pcy + 104.0f;
-                float fin = eo3((t - 1.45f) / 0.4f);
-                float prog = eo3((t - 1.45f) / 1.55f);
-                fd->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + 3.0f), A(white, 0.10f * fin), 2.0f);
-                if (prog > 0.003f)
-                    fd->AddRectFilledMultiColor(ImVec2(bx, by), ImVec2(bx + bw * prog, by + 3.0f), A(pink, fin), A(violet, fin), A(violet, fin), A(pink, fin));
-                const char* cap = prog < 0.34f ? "Loading modules" : (prog < 0.72f ? "Checking environment" : (prog < 0.985f ? "Almost ready" : "Ready"));
-                float cw3 = textW(font_medium, 14.0f, cap);
-                fd->AddText(font_medium, 14.0f, ImVec2(pcx - cw3 * 0.5f, by + 13.0f), A(IM_COL32(150, 153, 168, 255), fin), cap);
+                {   // progress hairline + caption
+                    const float bw = 196.0f, bx = pcx - bw * 0.5f, by = pcy + 104.0f;
+                    float fin = eo3((t - 1.45f) / 0.4f) * cf;
+                    float prog = eo3((t - 1.45f) / 1.05f);
+                    fd->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + 3.0f), A(white, 0.10f * fin), 2.0f);
+                    if (prog > 0.003f)
+                        fd->AddRectFilledMultiColor(ImVec2(bx, by), ImVec2(bx + bw * prog, by + 3.0f), A(amber, fin), A(pink, fin), A(violet, fin), A(pink, fin));
+                    const char* cap = prog < 0.34f ? "Loading modules" : (prog < 0.72f ? "Checking environment" : (prog < 0.985f ? "Almost ready" : "Ready"));
+                    float cw3 = textW(font_medium, 14.0f, cap);
+                    fd->AddText(font_medium, 14.0f, ImVec2(pcx - cw3 * 0.5f, by + 13.0f), A(IM_COL32(150, 153, 168, 255), fin), cap);
+                }
             }
         }
     }
@@ -326,67 +423,90 @@
     //  LICENSE
     // =========================================================================================
     if (stage == 0) {
-        if (Glass::BeginCard("license", Glass::Material::Regular, ImVec2(404.0f * scale, 0))) {
-            const float fade = authA * subA * closeA * introGate;
+        const bool isOpen = Glass::BeginCard("license", Glass::Material::Regular, ImVec2(404.0f * scale, 0));
+        const float fade = authA * subA * closeA * introGate;
+        Glass::SetCardFade(fade);
+        if (isOpen) {
             g_glass_renderer.SetSubmitFade(fade);
             ImGui::BeginDisabled(introGate < 0.95f);      // no clicks while the splash is up (alpha is set right after, so no dimming)
             style.Alpha = ent * fade; if (style.Alpha > 1.0f) style.Alpha = 1.0f;
             ImDrawList* dl = ImGui::GetWindowDrawList();
             {
                 const ImVec2 wp0 = ImGui::GetWindowPos(), ws0 = ImGui::GetWindowSize();
+                licW = ws0.x; licH = ws0.y;
+                drawTint(dl, wp0, ImVec2(wp0.x + ws0.x, wp0.y + ws0.y), 26.0f * scale);
                 drawAmbient(dl, ImVec2(wp0.x + 12.0f, wp0.y + 12.0f), ImVec2(wp0.x + ws0.x - 12.0f, wp0.y + ws0.y - 12.0f));
             }
             const float cwid = ImGui::GetContentRegionAvail().x;
-            const float rise = (1.0f - introGate) * 20.0f;
-            ImGui::Dummy(ImVec2(0, rise));
+            ImGuiStorage* stg = ImGui::GetStateStorage();
 
-            // header: our mark on a glass badge, title, subtitle (centred)
+            // header: the mark, the wordmark, a one-line subtitle
             {
                 ImVec2 c0 = ImGui::GetCursorScreenPos();
-                const float bs = 78.0f;
-                const ImVec2 bc(c0.x + cwid * 0.5f, c0.y + bs * 0.5f + 2.0f);
-                float breath = 0.6f + 0.4f * std::sin(tNow * 1.8f);
-                for (int k = 0; k < 5; ++k)
-                    dl->AddCircleFilled(bc, bs * 0.56f + k * 9.0f, fa(pink, (0.12f - k * 0.022f) * breath), 56);
-                Glass::Primitive badge; badge.cx = bc.x; badge.cy = bc.y;
-                badge.hw = bs * 0.5f; badge.hh = bs * 0.5f; badge.corner_radius = 25.0f; badge.fade = 1.0f;
-                badge.material = Glass::Material::Accent;
-                g_glass_renderer.Submit(badge);
-                drawMark(dl, bc, 25.0f, 1.0f, fa(white), fa(white, 0.62f), 0.0f);
-                const char* title = "Lumin";
-                const char* sub   = "Enter your license key to continue";
-                float tw1 = textW(font_semibold, 28.0f, title), tw2 = textW(font_medium, 15.0f, sub);
-                dl->AddText(font_semibold, 28.0f, ImVec2(c0.x + (cwid - tw1) * 0.5f, c0.y + bs + 14.0f), fa(ink), title);
-                dl->AddText(font_medium, 15.0f, ImVec2(c0.x + (cwid - tw2) * 0.5f, c0.y + bs + 52.0f), fa(soft), sub);
-                ImGui::Dummy(ImVec2(cwid, bs + 52.0f + 18.0f + 24.0f));
+                const ImVec2 bc(c0.x + cwid * 0.5f, c0.y + 46.0f);
+                drawEclipse(dl, bc, 34.0f, 1.0f, style.Alpha);
+                trackedC(dl, font_semibold, 25.0f, c0.x + cwid * 0.5f, c0.y + 96.0f, kBrand, 7.0f, fa(ink));
+                const char* sub = "Enter your license key to continue";
+                dl->AddText(font_medium, 15.0f, ImVec2(c0.x + (cwid - textW(font_medium, 15.0f, sub)) * 0.5f, c0.y + 132.0f), fa(soft), sub);
+                ImGui::Dummy(ImVec2(cwid, 168.0f));
             }
 
             const bool locked = (ver != 0) || pasteActive || lockT > 0.0f;
 
-            // key field (the library field floats its label above the text once something is typed)
+            // key field: our own box, a transparent ImGui input inside it, a floating label, a Paste chip
             bool enter = false;
             {
-                const float gw = ImGui::GetContentRegionAvail().x, fh = 64.0f;
-                ImVec2 gc = ImGui::GetCursorScreenPos();
+                const float gw = ImGui::GetContentRegionAvail().x, fh = 62.0f;
+                const ImVec2 gc = ImGui::GetCursorScreenPos(), gmx(gc.x + gw, gc.y + fh);
+                float& focT = *stg->GetFloatRef(ImGui::GetID("lic_f"), 0.0f);
+                float& labT = *stg->GetFloatRef(ImGui::GetID("lic_l"), 0.0f);
+                for (int q = 1; q <= 3; ++q)
+                    if (focT > 0.01f) dl->AddRect(ImVec2(gc.x - q * 2.5f, gc.y - q * 2.5f), ImVec2(gmx.x + q * 2.5f, gmx.y + q * 2.5f),
+                                                  fa(pink, 0.12f * focT * (1.0f - q / 4.0f)), 18.0f + q * 2.5f, 0, 2.0f);
+                dl->AddRectFilled(gc, gmx, fa(ink, 0.055f + 0.03f * focT), 18.0f);
+                const ImU32 bcol = licErr ? fa(IM_COL32(255, 85, 100, 255), 0.75f) : fa(mix(ink, pink, focT), lerpf(0.14f, 0.75f, focT));
+                dl->AddRect(gc, gmx, bcol, 18.0f, 0, 1.4f);
+                if (pastedFlash > 0.01f) dl->AddRect(gc, gmx, fa(pink, 0.9f * pastedFlash), 18.0f, 0, 2.0f);
+                Glass::DrawIcon(dl, Glass::Icon::Key, ImVec2(gc.x + 27.0f, gc.y + fh * 0.5f), 20.0f, fa(mix(soft, pink, focT)), 2.0f);
+                if (labT < 0.99f)
+                    dl->AddText(font_medium, 16.0f, ImVec2(gc.x + 52.0f, gc.y + fh * 0.5f - 7.0f), fa(soft, 0.80f * (1.0f - labT)), "License key");
+                if (labT > 0.01f)
+                    dl->AddText(font_medium, 11.0f, ImVec2(gc.x + 52.0f, gc.y + 8.0f + (1.0f - labT) * 10.0f), fa(mix(soft, pink, focT), labT), "LICENSE KEY");
+
+                const float rightPad = (licKey[0] == 0 && !locked) ? 90.0f : 16.0f;
+                ImGui::SetCursorScreenPos(ImVec2(gc.x + 52.0f, gc.y + 5.0f));
+                ImGui::SetNextItemWidth(gw - 52.0f - rightPad);
+                if (!autoFocus && introGate > 0.98f && !locked) { ImGui::SetKeyboardFocusHere(); autoFocus = true; }
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, (fh - 5.0f - ImGui::GetFontSize()) * 0.5f));
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_Text, ink);
+                char prev[64]; memcpy(prev, licKey, sizeof(prev));
                 ImGui::BeginDisabled(locked);
-                if (Glass::FieldRaw("lic", licKey, (int)sizeof(licKey), "License key", Glass::Icon::Key, false, fh))
-                    licErr = false;
-                if (Glass::FieldWasFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) enter = true;
+                bool ent2 = ImGui::InputText("##lic", licKey, (int)sizeof(licKey),
+                                             ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_CharsNoBlank | ImGuiInputTextFlags_EnterReturnsTrue);
+                const bool active = ImGui::IsItemActive();
                 ImGui::EndDisabled();
-                if (pastedFlash > 0.01f)
-                    dl->AddRect(gc, ImVec2(gc.x + gw, gc.y + fh), fa(pink, 0.85f * pastedFlash), 20.0f, 0, 1.8f);
+                ImGui::PopStyleColor(5);
+                ImGui::PopStyleVar();
+                if (strcmp(prev, licKey) != 0) licErr = false;
+                if (ent2) enter = true;
+                const float kk = sat01(dt * 12.0f);
+                focT += ((active ? 1.0f : 0.0f) - focT) * kk;
+                labT += (((active || licKey[0]) ? 1.0f : 0.0f) - labT) * kk;
+
                 if (!locked && licKey[0] == 0) {     // "Paste" chip inside the field
-                    const ImVec2 sv = ImGui::GetCursorScreenPos();
-                    const ImVec2 cs(64.0f, 28.0f), cmn(gc.x + gw - 14.0f - cs.x, gc.y + (fh - cs.y) * 0.5f);
+                    const ImVec2 cs(66.0f, 30.0f), cmn(gmx.x - 14.0f - cs.x, gc.y + (fh - cs.y) * 0.5f);
                     ImGui::SetCursorScreenPos(cmn);
                     bool pc = ImGui::InvisibleButton("##paste", cs);
                     bool hv = ImGui::IsItemHovered(), ac = ImGui::IsItemActive();
                     ImVec2 cmx(cmn.x + cs.x, cmn.y + cs.y);
-                    dl->AddRectFilled(cmn, cmx, fa(pink, ac ? 0.34f : (hv ? 0.26f : 0.16f)), 14.0f);
-                    dl->AddRect(cmn, cmx, fa(pink, hv ? 0.55f : 0.30f), 14.0f, 0, 1.0f);
+                    dl->AddRectFilled(cmn, cmx, fa(pink, ac ? 0.34f : (hv ? 0.26f : 0.15f)), 15.0f);
+                    dl->AddRect(cmn, cmx, fa(pink, hv ? 0.60f : 0.30f), 15.0f, 0, 1.0f);
                     float pw = textW(font_medium, 13.5f, "Paste");
                     dl->AddText(font_medium, 13.5f, ImVec2((cmn.x + cmx.x) * 0.5f - pw * 0.5f, (cmn.y + cmx.y) * 0.5f - 8.0f), fa(pink), "Paste");
-                    ImGui::SetCursorScreenPos(sv);
                     if (pc) {
                         const char* cb = ImGui::GetClipboardText();
                         int n = 0;
@@ -406,46 +526,60 @@
                                                 fa(pink, 0.95f), fa(pink, 0.0f), fa(pink, 0.0f), fa(pink, 0.95f));
                     dl->PopClipRect();
                 }
+                ImGui::SetCursorScreenPos(ImVec2(gc.x, gc.y + fh));
                 ImGui::Dummy(ImVec2(gw, 12.0f));
             }
 
             // row: remember me (left) + error message (right)
             {
-                ImVec2 rp = ImGui::GetCursorScreenPos();
-                ImGui::BeginDisabled(locked);
-                Glass::Checkbox("Remember me", &remember);
-                ImGui::EndDisabled();
+                const ImVec2 rp = ImGui::GetCursorScreenPos();
+                float& cT = *stg->GetFloatRef(ImGui::GetID("rem_c"), 0.0f);
+                bool tg = ImGui::InvisibleButton("##rem", ImVec2(142.0f, 26.0f));
+                bool hv = ImGui::IsItemHovered() && !locked;
+                if (tg && !locked) { remember = !remember; Glass::PlaySfx(Glass::Sfx::Tap); }
+                cT += ((remember ? 1.0f : 0.0f) - cT) * sat01(dt * 14.0f);
+                const ImVec2 b0(rp.x + 1.0f, rp.y + 4.0f), b1(rp.x + 19.0f, rp.y + 22.0f);
+                dl->AddRectFilled(b0, b1, fa(ink, 0.07f), 6.0f);
+                if (cT > 0.01f) dl->AddRectFilled(b0, b1, fa(pink, cT), 6.0f);
+                dl->AddRect(b0, b1, fa(mix(ink, pink, cT), 0.22f + 0.6f * cT), 6.0f, 0, 1.2f);
+                {
+                    float s1 = sat01(cT / 0.5f), s2 = sat01((cT - 0.5f) / 0.5f);
+                    ImVec2 a(b0.x + 4.5f, b0.y + 9.5f), b(b0.x + 7.8f, b0.y + 12.8f), c2(b0.x + 13.5f, b0.y + 5.5f);
+                    if (s1 > 0.0f) dl->AddLine(a, ImVec2(a.x + (b.x - a.x) * s1, a.y + (b.y - a.y) * s1), fa(white), 2.0f);
+                    if (s2 > 0.0f) dl->AddLine(b, ImVec2(b.x + (c2.x - b.x) * s2, b.y + (c2.y - b.y) * s2), fa(white), 2.0f);
+                }
+                dl->AddText(font_medium, 15.0f, ImVec2(rp.x + 29.0f, rp.y + 3.0f), fa(mix(soft, ink, hv ? 1.0f : cT * 0.6f)), "Remember me");
+
                 static float errA = 0.0f;
-                errA += ((licErr ? 1.0f : 0.0f) - errA) * (dt * 12.0f > 1.0f ? 1.0f : dt * 12.0f);
+                errA += ((licErr ? 1.0f : 0.0f) - errA) * sat01(dt * 12.0f);
                 if (errA > 0.01f) {
                     const char* em = errMsg;
                     float ew = textW(font_medium, 15.0f, em);
                     float slide = (1.0f - errA) * 8.0f;
-                    ImU32 col = fa(pink, errA);
-                    float ex = rp.x + cwid - ew - slide;
-                    Glass::DrawIcon(dl, Glass::Icon::Key, ImVec2(ex - 16.0f, rp.y + 12.0f), 15.0f, col, 2.0f);
-                    dl->AddText(font_medium, 15.0f, ImVec2(ex, rp.y + 3.0f), col, em);
+                    ImU32 col = fa(IM_COL32(255, 96, 112, 255), errA);
+                    float ex2 = rp.x + cwid - ew - slide;
+                    Glass::DrawIcon(dl, Glass::Icon::Key, ImVec2(ex2 - 16.0f, rp.y + 12.0f), 15.0f, col, 2.0f);
+                    dl->AddText(font_medium, 15.0f, ImVec2(ex2, rp.y + 3.0f), col, em);
                 }
-                ImGui::SetCursorScreenPos(ImVec2(rp.x, rp.y + 24.0f));
-                ImGui::Dummy(ImVec2(cwid, 18.0f));
+                ImGui::SetCursorScreenPos(ImVec2(rp.x, rp.y + 28.0f));
+                ImGui::Dummy(ImVec2(cwid, 14.0f));
             }
 
             // activate button: label + icon follow the check (Activate -> Checking -> Activated)
             const char* btnLabel = ver == 0 ? "Activate" : (ver == 1 ? "Checking license..." : "Activated");
             static char lockLbl[40];
             if (lockT > 0.0f) { std::snprintf(lockLbl, sizeof(lockLbl), "Try again in %ds", (int)std::ceil(lockT)); btnLabel = lockLbl; }
-            ImGui::BeginDisabled(lockT > 0.0f);
-            bool go = Glass::Button(btnLabel, true, ImVec2(ImGui::GetContentRegionAvail().x, 52.0f));
-            ImGui::EndDisabled();
+            ImVec2 bmn, bmx;
+            bool go = pbtn("act", ImGui::GetCursorScreenPos(), ImVec2(cwid, 50.0f), lockT <= 0.0f && !pasteActive, bmn, bmx);
             {
-                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
-                float tw = ImGui::CalcTextSize(btnLabel).x;
-                ImVec2 ic((mn.x + mx.x) * 0.5f - tw * 0.5f - 20.0f, (mn.y + mx.y) * 0.5f);
+                const float tw = textW(font_semibold, 17.0f, btnLabel);
+                const ImVec2 ic((bmn.x + bmx.x) * 0.5f - tw * 0.5f - 20.0f, (bmn.y + bmx.y) * 0.5f);
+                const ImU32 tcol = (lockT > 0.0f) ? fa(soft) : fa(white);
                 if (ver == 0 && lockT > 0.0f) {
-                    Glass::DrawIcon(dl, Glass::Icon::Key, ic, 20.0f, fa(white), 2.2f);
-                    dl->AddRectFilled(ImVec2(mn.x + 16.0f, mx.y - 7.0f), ImVec2(mn.x + 16.0f + (mx.x - mn.x - 32.0f) * (lockT / 15.0f), mx.y - 5.0f), fa(white, 0.55f), 2.0f);
+                    Glass::DrawIcon(dl, Glass::Icon::Key, ic, 20.0f, tcol, 2.2f);
+                    dl->AddRectFilled(ImVec2(bmn.x + 18.0f, bmx.y - 8.0f), ImVec2(bmn.x + 18.0f + (bmx.x - bmn.x - 36.0f) * (lockT / 15.0f), bmx.y - 6.0f), fa(pink, 0.8f), 2.0f);
                 } else if (ver == 0) {
-                    Glass::DrawIcon(dl, Glass::Icon::CheckCircle, ic, 20.0f, fa(white), 2.4f);
+                    Glass::DrawIcon(dl, Glass::Icon::CheckCircle, ic, 20.0f, tcol, 2.4f);
                 } else if (ver == 1) {      // spinner
                     float a0 = tNow * 7.0f;
                     dl->AddCircle(ic, 8.5f, fa(white, 0.25f), 24, 2.2f);
@@ -459,30 +593,20 @@
                     if (s1 > 0.0f) dl->AddLine(a, ImVec2(a.x + (b.x - a.x) * s1, a.y + (b.y - a.y) * s1), fa(pink), 2.4f);
                     if (s2 > 0.0f) dl->AddLine(b, ImVec2(b.x + (c2.x - b.x) * s2, b.y + (c2.y - b.y) * s2), fa(pink), 2.4f);
                 }
-                if (ver == 0 && lockT <= 0.0f) {   // light sweep across the idle button every few seconds
-                    float ph = std::fmod(tNow, 3.6f) / 3.6f;
-                    if (ph < 0.4f) {
-                        float u = ph / 0.4f;
-                        float bw2 = 26.0f, x = mn.x - 2.0f * bw2 + (mx.x - mn.x + 4.0f * bw2) * u;
-                        dl->PushClipRect(ImVec2(mn.x + 4.0f, mn.y + 4.0f), ImVec2(mx.x - 4.0f, mx.y - 4.0f), true);
-                        dl->AddRectFilledMultiColor(ImVec2(x, mn.y), ImVec2(x + bw2, mx.y), fa(IM_COL32(255, 255, 255, 0)), fa(IM_COL32(255, 255, 255, 46)),
-                                                    fa(IM_COL32(255, 255, 255, 46)), fa(IM_COL32(255, 255, 255, 0)));
-                        dl->AddRectFilledMultiColor(ImVec2(x + bw2, mn.y), ImVec2(x + 2.0f * bw2, mx.y), fa(IM_COL32(255, 255, 255, 46)), fa(IM_COL32(255, 255, 255, 0)),
-                                                    fa(IM_COL32(255, 255, 255, 0)), fa(IM_COL32(255, 255, 255, 46)));
-                        dl->PopClipRect();
-                    }
-                }
+                dl->AddText(font_semibold, 17.0f, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f + 8.0f, (bmn.y + bmx.y) * 0.5f - 9.0f), tcol, btnLabel);
+                if (ver == 0 && lockT <= 0.0f) sweep(dl, bmn, bmx, 3.6f, 0.4f);
             }
             // footer
             {
                 ImVec2 fp = ImGui::GetCursorScreenPos();
-                char foot[64]; std::snprintf(foot, sizeof(foot), "Lumin  -  %s", kVersion);
+                char foot[64]; std::snprintf(foot, sizeof(foot), "Eclipse  -  %s", kVersion);
                 float fw = textW(font_medium, 13.0f, foot);
                 dl->AddText(font_medium, 13.0f, ImVec2(fp.x + (cwid - fw) * 0.5f, fp.y + 14.0f), fa(soft, 0.7f), foot);
                 ImGui::Dummy(ImVec2(cwid, 38.0f));
             }
 
             // ---- the check itself: a short, smooth "verifying" phase, then the result ----
+            const bool isDemo = (_stricmp(licKey, kDemoKey) == 0) || (_stricmp(licKey, "LUMIN-DEMO") == 0);
             if (ver == 0 && lockT <= 0.0f && !pasteActive && (go || enter)) {
                 if (licKey[0] == 0) {
                     licErr = true; shake = 0.7f; std::snprintf(errMsg, sizeof(errMsg), "Enter a license key");
@@ -494,7 +618,7 @@
             } else if (ver == 1) {
                 verT += dt;
                 if (verT >= 1.45f) {
-                    if (_stricmp(licKey, kDemoKey) == 0) {
+                    if (isDemo) {
                         ver = 2; verT = 0.0f; fails = 0;
                         Glass::PlaySfx(Glass::Sfx::Success);
                     } else {
@@ -509,7 +633,7 @@
                 if (verT >= 0.7f) {
                     ver = 0; stage = 1; logged_in = true;
                     if (remember) LuminStore::Save(licKey); else LuminStore::Clear();
-                    Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Lumin", "License activated", "Welcome back.");
+                    Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Eclipse", "License activated", "Welcome back.");
                 }
             }
             g_glass_renderer.SetSubmitFade(1.0f);
@@ -517,126 +641,77 @@
             style.Alpha = ent;
         }
         Glass::EndCard();
+        Glass::SetCardFade(1.0f);
     } else {
         // =====================================================================================
         //  MENU / SUCCESS
         // =====================================================================================
-        const float dashW = (float)win_w - 92.0f;
-        const float dashH = (float)win_h - 92.0f;
-        if (Glass::BeginCard("dash", Glass::Material::Regular, ImVec2(dashW, dashH))) {
-            const float fade = authA * subA * closeA * introGate;
+        const bool isOpen = Glass::BeginCard("dash", Glass::Material::Regular, ImVec2(dashW, dashH));
+        const float fade = authA * subA * closeA * introGate;
+        Glass::SetCardFade(fade);
+        if (isOpen) {
             g_glass_renderer.SetSubmitFade(fade);
             ImGui::BeginDisabled(introGate < 0.95f);      // no clicks while the splash is up (alpha is set right after, so no dimming)
             style.Alpha = ent * fade; if (style.Alpha > 1.0f) style.Alpha = 1.0f;
             ImDrawList* dl = ImGui::GetWindowDrawList();
+            {
+                const ImVec2 wp0 = ImGui::GetWindowPos(), ws0 = ImGui::GetWindowSize();
+                drawTint(dl, wp0, ImVec2(wp0.x + ws0.x, wp0.y + ws0.y), 26.0f * scale);
+                drawAmbient(dl, ImVec2(wp0.x + 12.0f, wp0.y + 12.0f), ImVec2(wp0.x + ws0.x - 12.0f, wp0.y + ws0.y - 12.0f));
+            }
             const ImVec2 o = ImGui::GetCursorScreenPos();
             const float innerW = ImGui::GetContentRegionAvail().x;
             const float innerH = ImGui::GetContentRegionAvail().y;
             const float slide = (1.0f - subA) * 22.0f + (1.0f - contentA) * 14.0f;
-            {
-                const ImVec2 wp0 = ImGui::GetWindowPos(), ws0 = ImGui::GetWindowSize();
-                drawAmbient(dl, ImVec2(wp0.x + 12.0f, wp0.y + 12.0f), ImVec2(wp0.x + ws0.x - 12.0f, wp0.y + ws0.y - 12.0f));
-            }
 
-            // title bar: our mark (fades out while the island is open), window buttons on the right
+            // title bar: server pill on the left, wordmark in the middle (hides while the island is open), window buttons on the right
             {
-                ImVec2 lc(o.x + innerW * 0.5f, o.y + 17.0f);
-                float la = 1.0f - 0.92f * islandE;
-                drawMark(dl, lc, 11.0f, 1.0f, fa(ink, la), fa(pink, la), 0.0f);
+                const float la = 1.0f - 0.92f * islandE;
+                const float mx0 = o.x + innerW * 0.5f;
+                drawEclipse(dl, ImVec2(mx0 - 44.0f, o.y + 17.0f), 9.0f, 1.0f, style.Alpha * la);
+                trackedC(dl, font_semibold, 14.0f, mx0 + 12.0f, o.y + 9.0f, kBrand, 3.2f, fa(ink, la));
                 dl->AddLine(ImVec2(o.x - 8.0f, o.y + 42.0f), ImVec2(o.x + innerW + 8.0f, o.y + 42.0f), fa(ink, 0.10f), 1.0f);
                 // server indicator (demo: the ping is simulated)
-                {
-                    int ping = (int)(24.0f + 6.0f * std::sin(tNow * 0.7f) + 3.0f * std::sin(tNow * 2.3f) + 0.5f);
-                    char pb[32]; std::snprintf(pb, sizeof(pb), "Online - %d ms", ping);
-                    float pw = textW(font_medium, 13.0f, pb);
-                    float k = 1.0f - 0.85f * islandE;
-                    ImVec2 pmn(o.x + 2.0f, o.y + 4.0f), pmx(o.x + 2.0f + 30.0f + pw, o.y + 30.0f);
-                    dl->AddRectFilled(pmn, pmx, fa(ink, 0.06f * k), 13.0f);
-                    dl->AddRect(pmn, pmx, fa(ink, 0.10f * k), 13.0f, 0, 1.0f);
-                    ImVec2 dc(pmn.x + 14.0f, (pmn.y + pmx.y) * 0.5f);
-                    float ph = std::fmod(tNow, 1.8f) / 1.8f;
-                    dl->AddCircleFilled(dc, 3.6f, fa(okc, k), 14);
-                    dl->AddCircle(dc, 3.6f + ph * 7.0f, fa(okc, (1.0f - ph) * 0.5f * k), 20, 1.3f);
-                    dl->AddText(font_medium, 13.0f, ImVec2(pmn.x + 25.0f, pmn.y + 5.0f), fa(soft, k), pb);
-                }
+                int ping = (int)(24.0f + 6.0f * std::sin(tNow * 0.7f) + 3.0f * std::sin(tNow * 2.3f) + 0.5f);
+                char pb[32]; std::snprintf(pb, sizeof(pb), "Online - %d ms", ping);
+                float pw = textW(font_medium, 13.0f, pb);
+                ImVec2 pmn(o.x + 2.0f, o.y + 4.0f), pmx(o.x + 2.0f + 30.0f + pw, o.y + 30.0f);
+                dl->AddRectFilled(pmn, pmx, fa(ink, 0.06f * la), 13.0f);
+                dl->AddRect(pmn, pmx, fa(ink, 0.10f * la), 13.0f, 0, 1.0f);
+                ImVec2 dc(pmn.x + 14.0f, (pmn.y + pmx.y) * 0.5f);
+                float ph = std::fmod(tNow, 1.8f) / 1.8f;
+                dl->AddCircleFilled(dc, 3.6f, fa(okc, la), 14);
+                dl->AddCircle(dc, 3.6f + ph * 7.0f, fa(okc, (1.0f - ph) * 0.5f * la), 20, 1.3f);
+                dl->AddText(font_medium, 13.0f, ImVec2(pmn.x + 25.0f, pmn.y + 5.0f), fa(soft, la), pb);
             }
             const float baseAlpha = style.Alpha;
             style.Alpha = baseAlpha * contentA;       // inner content crossfades between menu and success
 
             if (stage == 1) {
-                const float sideW = 168.0f;
-                const float topY  = o.y + 56.0f;
+                const float leftW = 226.0f;
 
-                // ---------------- sidebar with our own icons ----------------
+                // ---------------- 3D emblem (reacts to the cursor) ----------------
                 {
-                    const float itemH = 46.0f, navW = sideW - 8.0f;
-                    const ImVec2 nb(o.x - slide, topY);
-                    ImGui::PushID("lumin_nav");
-                    ImGuiID sid = ImGui::GetID("sel");
-                    Glass::Spring& sp = Glass::g->springs().Get((uint32_t)sid, 10, Glass::SpringStyle::Critical, (float)sel);
-                    sp.target = (float)sel; sp.Tick(dt);
-                    Glass::Spring& tail = Glass::g->springs().Get((uint32_t)sid, 11, Glass::SpringStyle::Overdamped, sp.x);
-                    tail.target = sp.x; tail.Tick(dt);
-                    {   // the glass "pill" that follows the selection
-                        float phw = navW * 0.5f, phh = itemH * 0.5f - 3.0f;
-                        float cyH = nb.y + (sp.x + 0.5f) * itemH, cyT = nb.y + (tail.x + 0.5f) * itemH;
-                        if (std::fabs(cyH - cyT) > 1.5f) {
-                            Glass::SubmitBlob(nb.x + phw, cyH, phw, phh, nb.x + phw, cyT, phw, phh, 12.0f, 16.0f, 1.0f, Glass::Material::Thin);
-                        } else {
-                            Glass::Primitive hl; hl.cx = nb.x + phw; hl.cy = cyH; hl.hw = phw; hl.hh = phh;
-                            hl.corner_radius = 12.0f; hl.fade = 1.0f; hl.material = Glass::Material::Thin;
-                            g_glass_renderer.Submit(hl);
-                        }
-                    }
-                    for (int i = 0; i < 3; ++i) {
-                        ImGui::PushID(i);
-                        ImVec2 ip(nb.x, nb.y + i * itemH);
-                        ImGui::SetCursorScreenPos(ip);
-                        ImGui::InvisibleButton("##nav", ImVec2(navW, itemH));
-                        bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive();
-                        if (ImGui::IsItemDeactivated() && hov && i != sel) { sel = i; busy = false; Glass::PlaySfx(Glass::Sfx::TabChange); }
-                        uint32_t nid = (uint32_t)ImGui::GetID("##nav");
-                        Glass::Spring& prs = Glass::g->springs().Get(nid, 18, Glass::SpringStyle::Critical, 1.0f);
-                        prs.target = act ? 0.92f : 1.0f; prs.Tick(dt);
-                        Glass::Spring& lif = Glass::g->springs().Get(nid, 19, Glass::SpringStyle::Critical, 0.0f);
-                        lif.target = (hov || act) ? 1.0f : 0.0f; lif.Tick(dt);
-                        Glass::Spring& pop = Glass::g->springs().Get(nid, 20, Glass::SpringStyle::Critical, 0.0f);
-                        pop.target = (i == sel) ? 1.0f : 0.0f; pop.Tick(dt);
-                        float press = prs.x < 0.78f ? 0.78f : (prs.x > 1.12f ? 1.12f : prs.x);
-                        float lift  = sat01(lif.x);
-                        float popv  = pop.x < 0.0f ? 0.0f : (pop.x > 1.2f ? 1.2f : pop.x);
-                        float iScale = press * (1.0f + 0.10f * lift + 0.10f * popv);
-                        float shift  = lift * 5.0f;
-                        ImU32 col = mix(soft, ink, lift > popv ? lift : popv);
-                        prodIcon(dl, i, ImVec2(ip.x + 25.0f + shift, ip.y + itemH * 0.5f), 10.5f * iScale, fa(col));
-                        ImVec2 lts = ImGui::CalcTextSize(prods[i].name);
-                        dl->AddText(ImVec2(ip.x + 52.0f + shift, ip.y + (itemH - lts.y) * 0.5f), fa(col), prods[i].name);
-                        if (i == sel)
-                            Glass::DrawIcon(dl, Glass::Icon::ChevronR, ImVec2(ip.x + navW - 12.0f + lift * -3.0f, ip.y + itemH * 0.5f),
-                                            13.0f * (1.0f + 0.08f * popv), fa(IM_COL32(150, 150, 160, 200)), 2.0f);
-                        ImGui::PopID();
-                    }
-                    ImGui::PopID();
+                    static float spx = 0.0f, spy = 0.0f;
+                    const ImVec2 ec(o.x + leftW * 0.5f + slide * 0.5f, o.y + 190.0f);
+                    float tx = (io.MousePos.x - ec.x) / 320.0f, ty = (io.MousePos.y - ec.y) / 320.0f;
+                    tx = tx < -1.0f ? -1.0f : (tx > 1.0f ? 1.0f : tx); ty = ty < -1.0f ? -1.0f : (ty > 1.0f ? 1.0f : ty);
+                    spx += (tx - spx) * sat01(dt * 7.0f); spy += (ty - spy) * sat01(dt * 7.0f);
+                    const float emE = eo3(loadT / 0.7f);
+                    drawEmblem(dl, ec, 56.0f * (0.62f + 0.38f * emE), spx, spy, style.Alpha * emE);
                 }
+                dl->AddLine(ImVec2(o.x + leftW + 6.0f, o.y + 58.0f), ImVec2(o.x + leftW + 6.0f, o.y + 352.0f), fa(ink, 0.08f), 1.0f);
 
-                // divider
-                const float sepX = o.x + sideW + 10.0f;
-                dl->AddLine(ImVec2(sepX, o.y + 54.0f), ImVec2(sepX, o.y + innerH - 4.0f), fa(IM_COL32(0, 0, 0, 28)), 1.0f);
-                dl->AddLine(ImVec2(sepX + 1.0f, o.y + 54.0f), ImVec2(sepX + 1.0f, o.y + innerH - 4.0f), fa(IM_COL32(255, 255, 255, 36)), 1.0f);
+                // ---------------- product information ----------------
+                const float rx0 = o.x + leftW + 24.0f + slide;
+                const float rw  = innerW - leftW - 24.0f - 4.0f;
+                const float y0  = o.y + 60.0f;
+                dl->AddText(font_medium, 11.5f, ImVec2(rx0 + 2.0f, y0), fa(soft, 0.9f), "SELECTED PRODUCT");
+                dl->AddText(font_semibold, 30.0f, ImVec2(rx0, y0 + 16.0f), fa(ink), kProdName);
 
-                // ---------------- product information (slides in from the right) ----------------
-                const float cx  = o.x + sideW + 32.0f + slide;
-                const float cw2 = innerW - sideW - 32.0f;
-                dl->AddText(font_medium, 17.0f, ImVec2(cx, topY + 2.0f), fa(ink), "Product Information");
-
-                const Prod& p = prods[sel];
-                const float rowH = 38.0f, panelY = topY + 34.0f, panelH = rowH * 4 + 16.0f;
-                {
-                    Glass::Primitive pane; pane.cx = cx + cw2 * 0.5f; pane.cy = panelY + panelH * 0.5f;
-                    pane.hw = cw2 * 0.5f; pane.hh = panelH * 0.5f; pane.corner_radius = 16.0f; pane.fade = 1.0f;
-                    pane.material = Glass::Material::Thin;
-                    g_glass_renderer.Submit(pane);
-                }
+                const float rowH = 38.0f, panelY = y0 + 64.0f, panelH = rowH * 4 + 16.0f;
+                dl->AddRectFilled(ImVec2(rx0, panelY), ImVec2(rx0 + rw, panelY + panelH), fa(ink, 0.045f), 16.0f);
+                dl->AddRect(ImVec2(rx0, panelY), ImVec2(rx0 + rw, panelY + panelH), fa(ink, 0.09f), 16.0f, 0, 1.0f);
                 const char* labels[4] = { "Game", "Version", "Status", "Till Expiry" };
                 for (int i = 0; i < 4; ++i) {
                     // skeleton bars shimmer first, then each value reveals with a small stagger
@@ -644,8 +719,9 @@
                     float e  = eo3((loadT - rs) / 0.40f);
                     float sk = 1.0f - sm((loadT - rs) / 0.18f);
                     float ry = panelY + 8.0f + rowH * i + (rowH - 17.0f) * 0.5f;
-                    dl->AddText(font_medium, 16.0f, ImVec2(cx + 22.0f, ry), fa(soft), labels[i]);
-                    const float vr = cx + cw2 - 22.0f;
+                    if (i > 0) dl->AddLine(ImVec2(rx0 + 18.0f, panelY + 8.0f + rowH * i), ImVec2(rx0 + rw - 18.0f, panelY + 8.0f + rowH * i), fa(ink, 0.06f), 1.0f);
+                    dl->AddText(font_medium, 16.0f, ImVec2(rx0 + 22.0f, ry), fa(soft), labels[i]);
+                    const float vr = rx0 + rw - 22.0f;
 
                     if (sk > 0.01f) {
                         static const float skW[4] = { 132.0f, 58.0f, 76.0f, 64.0f };
@@ -663,25 +739,25 @@
 
                     char buf[48];
                     const char* val = buf;
-                    if (i == 0) val = p.game;
-                    else if (i == 1) val = p.version;
-                    else if (i == 2) val = p.status;
-                    else { std::snprintf(buf, sizeof(buf), "%d days", (int)(p.days * e + 0.5f)); }
+                    if (i == 0) val = kProdGame;
+                    else if (i == 1) val = kProdVer;
+                    else if (i == 2) val = kProdStatus;
+                    else { std::snprintf(buf, sizeof(buf), "%d days", (int)(kDays * e + 0.5f)); }
 
                     ImVec2 vs = font_medium->CalcTextSizeA(16.0f, 99999.0f, 0.0f, val);
                     float vx = vr - vs.x + (1.0f - e) * 18.0f;
-                    ImU32 vcol = (i == 2) ? p.statusCol : ink;
+                    ImU32 vcol = (i == 2) ? kStatusCol : ink;
                     dl->AddText(font_medium, 16.0f, ImVec2(vx, ry), fa(vcol, e), val);
 
                     if (i == 2) {   // pulsing status dot
                         ImVec2 dc(vx - 14.0f, ry + 9.0f);
                         float ph = std::fmod(tNow, 1.7f) / 1.7f;
-                        dl->AddCircleFilled(dc, 3.6f, fa(p.statusCol, e), 16);
-                        dl->AddCircle(dc, 3.6f + ph * 8.0f, fa(p.statusCol, (1.0f - ph) * 0.55f * e), 24, 1.4f);
+                        dl->AddCircleFilled(dc, 3.6f, fa(kStatusCol, e), 16);
+                        dl->AddCircle(dc, 3.6f + ph * 8.0f, fa(kStatusCol, (1.0f - ph) * 0.55f * e), 24, 1.4f);
                     }
                     if (i == 3) {   // "days left" ring: green >= 10, amber <= 9, red <= 3
-                        ImU32 rc = p.days <= 3 ? IM_COL32(255, 85, 85, 255) : (p.days <= 9 ? IM_COL32(255, 200, 80, 255) : okc);
-                        float frac = (float)p.days / 30.0f; if (frac > 1.0f) frac = 1.0f;
+                        ImU32 rc = kDays <= 3 ? IM_COL32(255, 85, 85, 255) : (kDays <= 9 ? IM_COL32(255, 200, 80, 255) : okc);
+                        float frac = (float)kDays / 30.0f; if (frac > 1.0f) frac = 1.0f;
                         ImVec2 rcn(vx - 17.0f, ry + 9.0f);
                         dl->AddCircle(rcn, 7.0f, fa(ink, 0.14f * e), 28, 2.4f);
                         if (frac * e > 0.01f) {
@@ -692,50 +768,47 @@
                 }
 
                 // action button (stub)
-                ImGui::SetCursorScreenPos(ImVec2(cx, panelY + panelH + 14.0f));
-                const bool disabled = busy || loadT < 1.4f || strcmp(p.status, "Available") != 0;
+                const ImVec2 abp(rx0, panelY + panelH + 18.0f);
+                const bool actOk = !busy && loadT >= 1.4f && strcmp(kProdStatus, "Available") == 0;
                 if (!busy) {
-                    bool clicked = Glass::Button(kActionText, true, ImVec2(cw2, 48.0f));
-                    ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
-                    if (!disabled) {   // light sweep
-                        float ph = std::fmod(tNow, 3.4f) / 3.4f;
-                        if (ph < 0.38f) {
-                            float u = ph / 0.38f;
-                            float bw2 = 34.0f, x = mn.x - 2.0f * bw2 + (mx.x - mn.x + 4.0f * bw2) * u;
-                            dl->PushClipRect(ImVec2(mn.x + 4.0f, mn.y + 4.0f), ImVec2(mx.x - 4.0f, mx.y - 4.0f), true);
-                            dl->AddRectFilledMultiColor(ImVec2(x, mn.y), ImVec2(x + bw2, mx.y), fa(IM_COL32(255, 255, 255, 0)), fa(IM_COL32(255, 255, 255, 40)),
-                                                        fa(IM_COL32(255, 255, 255, 40)), fa(IM_COL32(255, 255, 255, 0)));
-                            dl->AddRectFilledMultiColor(ImVec2(x + bw2, mn.y), ImVec2(x + 2.0f * bw2, mx.y), fa(IM_COL32(255, 255, 255, 40)), fa(IM_COL32(255, 255, 255, 0)),
-                                                        fa(IM_COL32(255, 255, 255, 0)), fa(IM_COL32(255, 255, 255, 40)));
-                            dl->PopClipRect();
-                        }
-                    }
-                    if (clicked) {
-                        if (!disabled) { busy = true; busyT = 0.0f; }
-                        else if (loadT >= 1.4f) Glass::Notify(Glass::Icon::WarnTriangle, IM_COL32(255, 159, 10, 255), "Lumin", "Not available", "This product is not ready yet.");
-                    }
+                    ImVec2 bmn, bmx;
+                    bool clicked = pbtn("inj", abp, ImVec2(rw, 52.0f), actOk, bmn, bmx);
+                    const float tw = textW(font_semibold, 17.0f, kActionText);
+                    const ImU32 tcol = actOk ? fa(white) : fa(soft);
+                    Glass::DrawIcon(dl, Glass::Icon::Bolt, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f - 18.0f, (bmn.y + bmx.y) * 0.5f), 18.0f, tcol, 2.2f);
+                    dl->AddText(font_semibold, 17.0f, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f + 6.0f, (bmn.y + bmx.y) * 0.5f - 9.5f), tcol, kActionText);
+                    if (actOk) sweep(dl, bmn, bmx, 3.4f, 0.38f);
+                    if (clicked) { busy = true; busyT = 0.0f; Glass::PlaySfx(Glass::Sfx::Tap); }
                 } else {
                     busyT += dt * 0.55f;
                     float pr = busyT > 1.0f ? 1.0f : busyT;
-                    Glass::ProgressBar(pr, ImVec2(cw2, 10.0f));
-                    ImGui::Dummy(ImVec2(0, 4));
+                    const ImVec2 t0(abp.x, abp.y + 12.0f), t1(abp.x + rw, abp.y + 22.0f);
+                    dl->AddRectFilled(t0, t1, fa(ink, 0.10f), 5.0f);
+                    for (int q = 1; q <= 3; ++q)
+                        dl->AddRectFilled(ImVec2(t0.x - q * 2.0f, t0.y - q * 2.0f), ImVec2(t0.x + rw * pr + q * 2.0f, t1.y + q * 2.0f), fa(pink, 0.06f * (1.0f - q / 4.0f)), 5.0f + q * 2.0f);
+                    if (pr > 0.01f) {
+                        dl->PushClipRect(t0, ImVec2(t0.x + rw * pr, t1.y), true);
+                        dl->AddRectFilledMultiColor(t0, t1, fa(amber), fa(pink), fa(violet), fa(pink));
+                        dl->PopClipRect();
+                    }
                     const char* msg = pr < 0.34f ? "Checking license..." : (pr < 0.72f ? "Preparing..." : "Almost done...");
-                    ImVec2 ts = ImGui::CalcTextSize(msg);
-                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (cw2 - ts.x) * 0.5f);
-                    ImGui::PushStyleColor(ImGuiCol_Text, soft);
-                    ImGui::TextUnformatted(msg);
-                    ImGui::PopStyleColor();
+                    dl->AddText(font_medium, 15.0f, ImVec2(abp.x + (rw - textW(font_medium, 15.0f, msg)) * 0.5f, abp.y + 30.0f), fa(soft), msg);
+                    ImGui::SetCursorScreenPos(abp); ImGui::Dummy(ImVec2(rw, 52.0f));
                     if (busyT >= 1.1f) { busy = false; stage = 2; okT = 0.0f; Glass::PlaySfx(Glass::Sfx::Success); }
+                }
+                {   // version tag, bottom right
+                    char vb[48]; std::snprintf(vb, sizeof(vb), "Eclipse  %s", kVersion);
+                    dl->AddText(font_medium, 12.5f, ImVec2(o.x + innerW - textW(font_medium, 12.5f, vb) - 4.0f, o.y + innerH - 22.0f), fa(soft, 0.7f), vb);
                 }
 
                 // ---------------- profile row (bottom-left): theme + sign out only ----------------
                 {
-                    float pbH = 56.0f, pbX = o.x + 6.0f - slide, pbW = sideW - 12.0f;
+                    float pbH = 56.0f, pbX = o.x + 4.0f - slide, pbW = 188.0f;
                     float pbY = o.y + innerH - pbH - 6.0f;
-                    Glass::ProfileAction pa = Glass::ProfileMenu("acct", kUserName, kUserTag, "U", IM_COL32(232, 104, 128, 255),
+                    Glass::ProfileAction pa = Glass::ProfileMenu("acct", kUserName, kUserTag, "U", IM_COL32(240, 92, 128, 255),
                                                                  pbX, pbY, pbW, &profStatus, &profTheme, fade, false);
                     if (pa == Glass::ProfileAction::SignOut) {
-                        stage = 0; logged_in = false; licKey[0] = 0; licErr = false; ver = 0; busy = false;
+                        stage = 0; logged_in = false; licKey[0] = 0; licErr = false; ver = 0; busy = false; autoFocus = false;
                         islandClock = 0.0f; islandE = 0.0f; islandAppear = 0.0f; islandState = 0; islandProg = 0.0f;
                         islandGone = false; islandHide = false;
                         LuminStore::Clear();
@@ -797,7 +870,7 @@
                         fd->AddText(font_semibold, 15.5f, ImVec2(tx, mid - 21.0f), fa(white, k), title);
                         ImVec2 bmin(pmax.x - 14.0f - 74.0f, mid - 15.0f), bmax(pmax.x - 14.0f, mid + 15.0f);
                         if (islandState == 0) {
-                            char sub[64]; std::snprintf(sub, sizeof(sub), "Lumin %s is ready", kVersion);
+                            char sub[64]; std::snprintf(sub, sizeof(sub), "Eclipse %s is ready", kVersion);
                             fd->AddText(font_medium, 12.5f, ImVec2(tx, mid + 2.0f), fa(IM_COL32(150, 153, 168, 255), k), sub);
                             bool hovB = ImGui::IsMouseHoveringRect(bmin, bmax);
                             fd->AddRectFilled(bmin, bmax, fa(hovB ? IM_COL32(246, 128, 150, 255) : pink, k), 15.0f);
@@ -893,5 +966,6 @@
             style.Alpha = ent;
         }
         Glass::EndCard();
+        Glass::SetCardFade(1.0f);
     }
 }

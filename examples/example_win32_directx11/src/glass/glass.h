@@ -243,6 +243,7 @@ bool DrawUIBlurPanel(ImDrawList* dl, ImVec2 pmin, ImVec2 pmax, float rounding, f
 
 bool BeginCard(const char* id, Material m = Material::Regular, ImVec2 size = ImVec2(0,0));
 void EndCard();
+void SetCardFade(float f);   // opacity of the card's glass body (applied in EndCard)
 
 bool Button(const char* label, bool primary = false, ImVec2 size = ImVec2(0,0));
 bool IconButton(const char* id, Icon ic, float size = 36.0f);
@@ -263,7 +264,7 @@ void DrawColorPickerModal();
 bool TextField(const char* label, char* buf, int buflen, const char* hint = nullptr, Icon leading = Icon::None);
 bool SearchField(char* buf, int buflen, const char* hint = "Search", float width = 0.0f);
 bool PasswordField(const char* label, char* buf, int buflen, const char* hint = nullptr);
-bool FieldRaw(const char* label, char* buf, int buflen, const char* hint, Icon leading, bool password, float height);
+bool FieldRaw(const char* label, char* buf, int buflen, const char* hint, Icon leading, bool password, float height, float width = 0.0f);
 bool FieldWasFocused();
 
 void ProgressRing(const char* id, float frac, float radius, const char* center = nullptr);

@@ -177,7 +177,7 @@ int main(int, char**)
     int sx = ::GetSystemMetrics(SM_CXSCREEN), sy = ::GetSystemMetrics(SM_CYSCREEN);
     int px = (g_cfg.win_x >= 0) ? g_cfg.win_x : (sx - win_w) / 2;
     int py = (g_cfg.win_y >= 0) ? g_cfg.win_y : (sy - win_h) / 2;
-    HWND hwnd = ::CreateWindowExW(WS_EX_LAYERED, wc.lpszClassName, L"Lumin",
+    HWND hwnd = ::CreateWindowExW(WS_EX_LAYERED, wc.lpszClassName, L"Eclipse",
                                   WS_POPUP, px, py, win_w, win_h,
                                   nullptr, nullptr, wc.hInstance, nullptr);
     ::SetLayeredWindowAttributes(hwnd, RGB(0,0,0), 255, LWA_ALPHA);
