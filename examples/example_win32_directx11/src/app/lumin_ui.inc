@@ -38,6 +38,10 @@
     static bool  pasteActive = false; static int pasteIdx = 0, pasteLen = 0; static float pasteAcc = 0.0f, pastedFlash = 0.0f;
     static char  pasteBuf[48] = "";
     static bool  autoFocus = false;
+    static int   lang = 0, themeSel = 0, emblemSel = 0, tabSel = 0, lastTab = 0;   // lang: 0 EN, 1 RU
+    static float pageT = 1.0f, glitchE = 0.0f, busyE = 0.0f;
+    static bool  optAuto = false, optTray = true, optNotif = true;
+    static unsigned gamePid = 0;
     static float licW = 0.0f, licH = 0.0f;  // last measured size of the license card (the intro grows into it)
     static bool  closing = false; static float closeT = 0.0f;
     static bool  loadedSaved = false, welcomePending = false;
@@ -55,9 +59,14 @@
 
     const ImU32 ink    = Glass::InkColor();       // follows the light / dark theme
     const ImU32 soft   = Glass::InkSoftColor();
-    const ImU32 pink   = IM_COL32(232, 38, 66, 255);
-    const ImU32 violet = IM_COL32(168, 34, 112, 255);
-    const ImU32 amber  = IM_COL32(255, 122, 46, 255);
+    static const ImU32 thA[3] = { IM_COL32(232, 38, 66, 255), IM_COL32(60, 150, 255, 255), IM_COL32(150, 90, 255, 255) };
+    static const ImU32 thB[3] = { IM_COL32(168, 34, 112, 255), IM_COL32(110, 90, 255, 255), IM_COL32(220, 70, 200, 255) };
+    static const ImU32 thC[3] = { IM_COL32(255, 122, 46, 255), IM_COL32(80, 220, 255, 255), IM_COL32(255, 120, 200, 255) };
+    if (themeSel < 0 || themeSel > 2) themeSel = 0;
+    const ImU32 pink   = thA[themeSel];
+    const ImU32 violet = thB[themeSel];
+    const ImU32 amber  = thC[themeSel];
+    accent[0] = (float)(pink & 0xFF) / 255.0f; accent[1] = (float)((pink >> 8) & 0xFF) / 255.0f; accent[2] = (float)((pink >> 16) & 0xFF) / 255.0f;
     const ImU32 okc    = IM_COL32(52, 209, 88, 255);
     const ImU32 white  = IM_COL32(255, 255, 255, 255);
 
@@ -88,6 +97,8 @@
         return (ImU32)((chn(0)) | (chn(8) << 8) | (chn(16) << 16) | (chn(24) << 24));
     };
     auto textW = [&](ImFont* f, float size, const char* t) { return f->CalcTextSizeA(size, 99999.0f, 0.0f, t).x; };
+    const ImU32 deep = mix(pink, IM_COL32(0, 0, 0, 255), 0.50f);      // dark shade of the accent (extrusion, shadows)
+    auto T = [&](const char* en, const char* ru) { return lang == 1 ? ru : en; };
     // letter-spaced text, centred on cx
     auto trackedC = [&](ImDrawList* d, ImFont* f, float size, float cx, float y, const char* t, float sp, ImU32 col) {
         float total = 0.0f; int n = 0;
@@ -111,7 +122,7 @@
         // thickness: a stack of dark copies pushed back
         for (int l = 5; l >= 1; --l) {
             float ox = -sy * R * 0.028f * l, oy = R * 0.016f * l;
-            ImU32 col = mulA(mix(IM_COL32(26, 4, 10, 255), IM_COL32(112, 14, 32, 255), 1.0f - l / 5.0f), al);
+            ImU32 col = mulA(mix(IM_COL32(8, 6, 10, 255), deep, 1.0f - l / 5.0f), al);
             for (int sp = 0; sp < NS; ++sp) {
                 float ang = rot + sp * 2.0f * hb, len = (sp % 2 == 0) ? R : R * 0.60f;
                 d->AddTriangleFilled(pt(ang, len, ox, oy), pt(ang - hb, r0, ox, oy), pt(ang + hb, r0, ox, oy), col);
@@ -128,7 +139,7 @@
                 float v = 0.5f + 0.5f * std::cos(fang - lightA);
                 v = v * v * (sp % 2 == 0 ? 1.0f : 0.8f);
                 ImU32 col = mix(IM_COL32(18, 19, 30, 255), IM_COL32(244, 247, 255, 255), v);
-                col = mix(col, IM_COL32(130, 12, 34, 255), (1.0f - v) * 0.38f);
+                col = mix(col, deep, (1.0f - v) * 0.45f);
                 d->AddTriangleFilled(tip, side ? br : bl, ce, mulA(col, al));
             }
             d->AddLine(ce, tip, mulA(white, 0.30f * al), 1.0f);
@@ -148,18 +159,107 @@
         drawStar(d, c, R * 1.08f * ps, std::sin(tNow * 0.5f) * 0.18f, (1.0f - eo3(p)) * kPi * 0.75f + tNow * 0.05f, al, ps);
     };
 
-    // ---- 3D product emblem: the chrome blade star hovering over a red-lit floor, turning with the cursor, embers rising ----
+    // ---- product emblems (chosen in Settings): 0 chrome blade star, 1 chrome "anarchy" ring + A, 2 faceted crystal ----
+    auto drawAnarchy = [&](ImDrawList* d, ImVec2 c, float R, float yaw, float al, float glow) {
+        const float xs = std::max(0.42f, std::fabs(std::cos(yaw))), sy = std::sin(yaw);
+        const float beat = 0.78f + 0.22f * std::sin(tNow * 2.2f);
+        for (int k = 0; k < 7; ++k)
+            d->AddCircleFilled(c, R * (0.85f + k * 0.24f), mulA(pink, 0.065f * (1.0f - k / 7.0f) * glow * beat * al), 40);
+        auto P = [&](float x, float y, float ox, float oy) { return ImVec2(c.x + x * R * xs + ox, c.y + y * R + oy); };
+        const float lw = R * 0.17f;
+        auto strokes = [&](float ox, float oy, ImU32 colRing, ImU32 colA, float w) {
+            for (int i = 0; i <= 56; ++i) { float a = i * 2.0f * kPi / 56.0f; d->PathLineTo(P(std::cos(a) * 0.78f, std::sin(a) * 0.78f, ox, oy)); }
+            d->PathStroke(colRing, ImDrawFlags_Closed, w);
+            d->AddLine(P(0.0f, -0.64f, ox, oy), P(-0.44f, 0.58f, ox, oy), colA, w * 0.9f);
+            d->AddLine(P(0.0f, -0.64f, ox, oy), P(0.44f, 0.58f, ox, oy), colA, w * 0.9f);
+            d->AddLine(P(-1.04f, 0.16f, ox, oy), P(1.04f, 0.16f, ox, oy), colA, w * 0.9f);
+        };
+        for (int l = 5; l >= 1; --l) {                       // thickness
+            ImU32 col = mulA(mix(IM_COL32(8, 6, 10, 255), deep, 1.0f - l / 5.0f), al);
+            strokes(-sy * R * 0.028f * l, R * 0.016f * l, col, col, lw);
+        }
+        const float lightA = -2.3f + std::sin(tNow * 0.55f) * 0.7f - sy * 0.6f;
+        const int N = 56;
+        for (int i = 0; i < N; ++i) {                        // ring: segments catch the light like polished steel
+            float a0 = i * 2.0f * kPi / N, a1 = (i + 1) * 2.0f * kPi / N;
+            float v = 0.5f + 0.5f * std::cos((a0 + a1) * 0.5f - lightA); v = v * v;
+            ImU32 col = mix(IM_COL32(18, 19, 30, 255), IM_COL32(244, 247, 255, 255), v);
+            col = mix(col, deep, (1.0f - v) * 0.45f);
+            d->AddLine(P(std::cos(a0) * 0.78f, std::sin(a0) * 0.78f, 0, 0), P(std::cos(a1) * 0.78f, std::sin(a1) * 0.78f, 0, 0), mulA(col, al), lw);
+        }
+        const ImU32 steel = mulA(IM_COL32(206, 212, 228, 255), al);
+        d->AddLine(P(0.0f, -0.64f, 0, R * 0.02f), P(-0.44f, 0.58f, 0, R * 0.02f), mulA(IM_COL32(30, 32, 46, 255), al), lw * 0.9f);
+        d->AddLine(P(0.0f, -0.64f, 0, R * 0.02f), P(0.44f, 0.58f, 0, R * 0.02f), mulA(IM_COL32(30, 32, 46, 255), al), lw * 0.9f);
+        d->AddLine(P(-1.04f, 0.16f, 0, R * 0.02f), P(1.04f, 0.16f, 0, R * 0.02f), mulA(IM_COL32(30, 32, 46, 255), al), lw * 0.9f);
+        d->AddLine(P(0.0f, -0.64f, 0, 0), P(-0.44f, 0.58f, 0, 0), steel, lw * 0.8f);
+        d->AddLine(P(0.0f, -0.64f, 0, 0), P(0.44f, 0.58f, 0, 0), mulA(IM_COL32(150, 156, 176, 255), al), lw * 0.8f);
+        d->AddLine(P(-1.04f, 0.16f, 0, 0), P(1.04f, 0.16f, 0, 0), steel, lw * 0.8f);
+        d->AddLine(P(-1.04f, 0.16f, 0, -lw * 0.22f), P(1.04f, 0.16f, 0, -lw * 0.22f), mulA(white, 0.55f * al), lw * 0.16f);
+        d->AddCircleFilled(P(0.0f, -0.64f, 0, 0), R * 0.07f, mulA(pink, al), 14);
+    };
+    auto drawCrystal = [&](ImDrawList* d, ImVec2 c, float R, float yaw, float rot, float al, float glow) {
+        const float beat = 0.78f + 0.22f * std::sin(tNow * 2.2f);
+        for (int k = 0; k < 7; ++k)
+            d->AddCircleFilled(c, R * (0.85f + k * 0.24f), mulA(pink, 0.065f * (1.0f - k / 7.0f) * glow * beat * al), 40);
+        const int K = 6;
+        const ImVec2 top(c.x, c.y - R * 1.05f), bot(c.x, c.y + R * 1.05f);
+        ImVec2 E[K + 1]; float zs[K + 1];
+        for (int k = 0; k <= K; ++k) {
+            float a = rot + k * 2.0f * kPi / K;
+            E[k] = ImVec2(c.x + std::cos(a) * R * 0.68f, c.y + std::sin(a) * R * 0.68f * 0.26f + R * 0.04f);
+            zs[k] = std::sin(a);
+        }
+        const float lightA = -1.6f + std::sin(tNow * 0.55f) * 0.8f + yaw;
+        for (int pass = 0; pass < 2; ++pass) {              // back faces first, then front faces
+            for (int part = 0; part < 2; ++part) {          // lower half before upper half
+                for (int k = 0; k < K; ++k) {
+                    float a = rot + (k + 0.5f) * 2.0f * kPi / K;
+                    bool front = std::sin(a) >= 0.0f;
+                    if ((pass == 1) != front) continue;
+                    bool upper = (part == 1);
+                    float v = 0.5f + 0.5f * std::cos(a - lightA);
+                    v = upper ? 0.25f + 0.75f * v : 0.55f * v;
+                    ImU32 col = mix(IM_COL32(16, 17, 28, 255), IM_COL32(240, 245, 255, 255), v);
+                    col = mix(col, deep, (1.0f - v) * 0.5f);
+                    d->AddTriangleFilled(upper ? top : bot, E[k], E[k + 1], mulA(col, al * (front ? 1.0f : 0.8f)));
+                    d->AddLine(upper ? top : bot, E[k], mulA(white, 0.18f * al), 1.0f);
+                }
+            }
+        }
+        for (int k = 0; k < K; ++k) if (zs[k] >= 0.0f) d->AddLine(E[k], E[k + 1], mulA(white, 0.35f * al), 1.2f);
+        d->AddCircleFilled(c, R * 0.20f, mulA(pink, 0.22f * al * beat), 24);
+    };
+
+    // ---- 3D product emblem: hovering over a lit floor, turning with the cursor, embers rising; glitches while injecting ----
     auto drawEmblem = [&](ImDrawList* d, ImVec2 ec, float Rs, float px, float py, float al) {
         const float bob = std::sin(tNow * 1.3f) * 4.0f;
-        const ImVec2 sc(ec.x + px * 6.0f, ec.y + bob + py * 5.0f);
-        {   // floor shadow / red under-glow (shrinks while the star floats up)
+        ImVec2 sc(ec.x + px * 6.0f, ec.y + bob + py * 5.0f);
+        {   // floor shadow / under-glow (shrinks while the emblem floats up)
             float sh = 1.0f - bob * 0.02f;
             for (int k = 0; k < 5; ++k)
                 d->AddEllipseFilled(ImVec2(ec.x + px * 2.0f, ec.y + Rs * 1.75f), ImVec2(Rs * (1.30f - k * 0.18f) * sh, 9.0f - k * 1.5f), mulA(pink, 0.075f * al));
         }
-        drawStar(d, sc, Rs * 1.32f, std::sin(tNow * 0.55f) * 0.5f + px * 0.55f, tNow * 0.12f + px * 0.25f, al, 1.0f);
-        // embers drifting up from the star
-        for (int i = 0; i < 16; ++i) {
+        const float yaw = std::sin(tNow * 0.55f) * 0.5f + px * 0.55f, rot = tNow * 0.12f + px * 0.25f;
+        auto body = [&](ImVec2 p, float a2, float glow) {
+            if (emblemSel == 1)      drawAnarchy(d, p, Rs * 1.10f, yaw, a2, glow);
+            else if (emblemSel == 2) drawCrystal(d, p, Rs * 1.12f, yaw, rot * 2.0f, a2, glow);
+            else                     drawStar(d, p, Rs * 1.32f, yaw, rot, a2, glow);
+        };
+        const float g = glitchE;
+        if (g > 0.02f) {                                     // chromatic ghosts + jitter + scan slices
+            float h1 = std::sin(std::floor(tNow * 16.0f) * 91.7f), h2 = std::sin(std::floor(tNow * 16.0f) * 37.3f);
+            sc.x += h1 * 4.0f * g; sc.y += h2 * 2.0f * g;
+            body(ImVec2(sc.x + 7.0f * g, sc.y), al * 0.28f * g, 0.0f);
+            body(ImVec2(sc.x - 7.0f * g, sc.y), al * 0.28f * g, 0.0f);
+        }
+        body(sc, al, 1.0f);
+        if (g > 0.02f) {
+            for (int i = 0; i < 3; ++i) {
+                float yy = sc.y + Rs * 1.3f * std::sin(std::floor(tNow * 14.0f) * (i + 1.3f));
+                d->AddRectFilled(ImVec2(sc.x - Rs * 1.5f, yy), ImVec2(sc.x + Rs * 1.5f, yy + 2.0f + i), mulA(white, 0.12f * g * al));
+            }
+        }
+        for (int i = 0; i < 16; ++i) {                       // embers
             float ph = std::fmod(tNow * (0.10f + 0.05f * (i % 4)) + i * 0.37f, 1.0f);
             float x = sc.x + std::sin(i * 2.7f) * Rs * 1.15f + std::sin(tNow * 0.9f + i) * 6.0f;
             float y = sc.y + Rs * 1.1f - ph * Rs * 2.5f;
@@ -218,7 +318,7 @@
         if (enabled) {
             for (int q = 1; q <= 4; ++q)
                 d->AddRectFilled(ImVec2(mn.x - q * 3.0f, mn.y - q * 2.0f + 3.0f), ImVec2(mx.x + q * 3.0f, mx.y + q * 3.0f + 3.0f), fa(pink, (0.045f + 0.07f * hv) * (1.0f - q / 5.0f)), r + q * 3.0f);
-            d->AddRectFilled(mn, mx, fa(mix(IM_COL32(186, 22, 46, 255), IM_COL32(246, 70, 56, 255), 0.25f + 0.55f * hv)), r);
+            d->AddRectFilled(mn, mx, fa(mix(mix(pink, IM_COL32(0, 0, 0, 255), 0.22f), mix(pink, amber, 0.5f), 0.25f + 0.55f * hv)), r);
             d->AddRectFilled(mn, ImVec2(mx.x, (mn.y + mx.y) * 0.5f), fa(white, 0.15f), r, ImDrawFlags_RoundCornersTop);
             d->AddRect(mn, mx, fa(white, 0.28f), r, 0, 1.0f);
         } else {
@@ -241,14 +341,14 @@
 
     // is a process with this exe name running? (read-only snapshot of the process list)
     auto procRunning = [&](const wchar_t* exe) {
-        bool found = false;
+        bool found = false; DWORD pid = 0;
         HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (snap != INVALID_HANDLE_VALUE) {
             PROCESSENTRY32W pe; pe.dwSize = sizeof(pe);
-            if (::Process32FirstW(snap, &pe)) do { if (::_wcsicmp(pe.szExeFile, exe) == 0) { found = true; break; } } while (::Process32NextW(snap, &pe));
+            if (::Process32FirstW(snap, &pe)) do { if (::_wcsicmp(pe.szExeFile, exe) == 0) { found = true; pid = pe.th32ProcessID; break; } } while (::Process32NextW(snap, &pe));
             ::CloseHandle(snap);
         }
-        return found;
+        return found ? pid : 0u;
     };
 
     // ---- state machines ----------------------------------------------------------------------
@@ -261,6 +361,9 @@
     // "Remember me": restore a saved key once, at launch
     if (!loadedSaved) {
         loadedSaved = true;
+        lang = LuminStore::LoadInt(L"Lang", 0); themeSel = LuminStore::LoadInt(L"Theme", 0); emblemSel = LuminStore::LoadInt(L"Emblem", 0);
+        optAuto = LuminStore::LoadInt(L"OptAuto", 0) != 0; optTray = LuminStore::LoadInt(L"OptTray", 1) != 0; optNotif = LuminStore::LoadInt(L"OptNotif", 1) != 0;
+        if (lang < 0 || lang > 1) lang = 0; if (themeSel < 0 || themeSel > 2) themeSel = 0; if (emblemSel < 0 || emblemSel > 2) emblemSel = 0;
         if (LuminStore::Load(licKey, (int)sizeof(licKey))) {
             remember = true;
             if (_stricmp(licKey, kDemoKey) == 0 || _stricmp(licKey, "LUMIN-DEMO") == 0) { stage = 1; logged_in = true; welcomePending = true; }
@@ -268,7 +371,7 @@
     }
     if (welcomePending && introT > 3.6f) {
         welcomePending = false;
-        Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Eclipse", "Welcome back", "You are signed in.");
+        if (optNotif) Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Eclipse", T("Welcome back", "С возвращением"), T("You are signed in.", "Вы вошли в аккаунт."));
     }
 
     if (stage != lastStage) {
@@ -286,9 +389,13 @@
     if (lockT > 0.0f) { lockT -= dt; if (lockT <= 0.0f) { lockT = 0.0f; licErr = false; } }
     if (stage == 1) {                     // watch the game process (read-only) so the screen can show its state live
         pollT -= dt;
-        if (pollT <= 0.0f) { gameUp = procRunning(kProcName); pollT = 2.0f; if (gameUp) notFound = false; }
+        if (pollT <= 0.0f) { gamePid = procRunning(kProcName); gameUp = gamePid != 0; pollT = 2.0f; if (gameUp) notFound = false; }
     }
     gameE += ((gameUp ? 1.0f : 0.0f) - gameE) * sat01(dt * 6.0f);
+    glitchE += ((busy ? 1.0f : 0.0f) - glitchE) * sat01(dt * 6.0f);
+    busyE += ((busy ? 1.0f : 0.0f) - busyE) * sat01(dt * 8.0f);
+    if (tabSel != lastTab) { lastTab = tabSel; pageT = 0.0f; }
+    pageT += dt * 3.2f; if (pageT > 1.0f) pageT = 1.0f;
     nfE += (((notFound && !busy) ? 1.0f : 0.0f) - nfE) * sat01(dt * 9.0f);
     pastedFlash -= dt * 2.0f; if (pastedFlash < 0.0f) pastedFlash = 0.0f;
     if (pasteActive) {      // clipboard text "types itself" into the field
@@ -405,7 +512,7 @@
                     fd->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + 3.0f), A(white, 0.10f * fin), 2.0f);
                     if (prog > 0.003f)
                         fd->AddRectFilledMultiColor(ImVec2(bx, by), ImVec2(bx + bw * prog, by + 3.0f), A(amber, fin), A(pink, fin), A(violet, fin), A(pink, fin));
-                    const char* cap = prog < 0.34f ? "Loading modules" : (prog < 0.72f ? "Checking environment" : (prog < 0.985f ? "Almost ready" : "Ready"));
+                    const char* cap = prog < 0.34f ? T("Loading modules", "Загрузка модулей") : (prog < 0.72f ? T("Checking environment", "Проверка окружения") : (prog < 0.985f ? T("Almost ready", "Почти готово") : T("Ready", "Готово")));
                     float cw3 = textW(font_medium, 14.0f, cap);
                     fd->AddText(font_medium, 14.0f, ImVec2(pcx - cw3 * 0.5f, by + 13.0f), A(IM_COL32(150, 153, 168, 255), fin), cap);
                 }
@@ -440,7 +547,7 @@
                 const ImVec2 bc(c0.x + cwid * 0.5f, c0.y + 46.0f);
                 drawEclipse(dl, bc, 34.0f, 1.0f, style.Alpha);
                 trackedC(dl, font_semibold, 25.0f, c0.x + cwid * 0.5f, c0.y + 96.0f, kBrand, 7.0f, fa(ink));
-                const char* sub = "Enter your license key to continue";
+                const char* sub = T("Enter your license key to continue", "Введите лицензионный ключ");
                 dl->AddText(font_medium, 15.0f, ImVec2(c0.x + (cwid - textW(font_medium, 15.0f, sub)) * 0.5f, c0.y + 132.0f), fa(soft), sub);
                 ImGui::Dummy(ImVec2(cwid, 168.0f));
             }
@@ -463,11 +570,13 @@
                 if (pastedFlash > 0.01f) dl->AddRect(gc, gmx, fa(pink, 0.9f * pastedFlash), 18.0f, 0, 2.0f);
                 Glass::DrawIcon(dl, Glass::Icon::Key, ImVec2(gc.x + 27.0f, gc.y + fh * 0.5f), 20.0f, fa(mix(soft, pink, focT)), 2.0f);
                 if (labT < 0.99f)
-                    dl->AddText(font_medium, 16.0f, ImVec2(gc.x + 52.0f, gc.y + fh * 0.5f - 7.0f), fa(soft, 0.80f * (1.0f - labT)), "License key");
+                    dl->AddText(font_medium, 16.0f, ImVec2(gc.x + 52.0f, gc.y + fh * 0.5f - 7.0f), fa(soft, 0.80f * (1.0f - labT)), T("License key", "Лицензионный ключ"));
                 if (labT > 0.01f)
-                    dl->AddText(font_medium, 11.0f, ImVec2(gc.x + 52.0f, gc.y + 8.0f + (1.0f - labT) * 10.0f), fa(mix(soft, pink, focT), labT), "LICENSE KEY");
+                    dl->AddText(font_medium, 11.0f, ImVec2(gc.x + 52.0f, gc.y + 8.0f + (1.0f - labT) * 10.0f), fa(mix(soft, pink, focT), labT), T("LICENSE KEY", "ЛИЦЕНЗИОННЫЙ КЛЮЧ"));
 
-                const float rightPad = (licKey[0] == 0 && !locked) ? 90.0f : 16.0f;
+                const char* pasteLbl = T("Paste", "Вставить");
+                const float pasteW = textW(font_medium, 13.5f, pasteLbl) + 30.0f;
+                const float rightPad = (licKey[0] == 0 && !locked) ? pasteW + 24.0f : 16.0f;
                 ImGui::SetCursorScreenPos(ImVec2(gc.x + 52.0f, gc.y + 5.0f));
                 ImGui::SetNextItemWidth(gw - 52.0f - rightPad);
                 if (!autoFocus && introGate > 0.98f && !locked) { ImGui::SetKeyboardFocusHere(); autoFocus = true; }
@@ -492,21 +601,21 @@
                 labT += (((active || licKey[0]) ? 1.0f : 0.0f) - labT) * kk;
 
                 if (!locked && licKey[0] == 0) {     // "Paste" chip inside the field
-                    const ImVec2 cs(66.0f, 30.0f), cmn(gmx.x - 14.0f - cs.x, gc.y + (fh - cs.y) * 0.5f);
+                    const ImVec2 cs(pasteW, 30.0f), cmn(gmx.x - 14.0f - cs.x, gc.y + (fh - cs.y) * 0.5f);
                     ImGui::SetCursorScreenPos(cmn);
                     bool pc = ImGui::InvisibleButton("##paste", cs);
                     bool hv = ImGui::IsItemHovered(), ac = ImGui::IsItemActive();
                     ImVec2 cmx(cmn.x + cs.x, cmn.y + cs.y);
                     dl->AddRectFilled(cmn, cmx, fa(pink, ac ? 0.34f : (hv ? 0.26f : 0.15f)), 15.0f);
                     dl->AddRect(cmn, cmx, fa(pink, hv ? 0.60f : 0.30f), 15.0f, 0, 1.0f);
-                    float pw = textW(font_medium, 13.5f, "Paste");
-                    dl->AddText(font_medium, 13.5f, ImVec2((cmn.x + cmx.x) * 0.5f - pw * 0.5f, (cmn.y + cmx.y) * 0.5f - 8.0f), fa(pink), "Paste");
+                    float pw = textW(font_medium, 13.5f, pasteLbl);
+                    dl->AddText(font_medium, 13.5f, ImVec2((cmn.x + cmx.x) * 0.5f - pw * 0.5f, (cmn.y + cmx.y) * 0.5f - 8.0f), fa(pink), pasteLbl);
                     if (pc) {
                         const char* cb = ImGui::GetClipboardText();
                         int n = 0;
                         if (cb) for (const char* q = cb; *q && n < 40; ++q) if ((unsigned char)*q >= 33 && (unsigned char)*q <= 126) pasteBuf[n++] = *q;
                         pasteBuf[n] = 0;
-                        if (n == 0) Glass::Notify(Glass::Icon::WarnTriangle, IM_COL32(255, 159, 10, 255), "Clipboard", "Nothing to paste", "Copy your license key first.");
+                        if (n == 0) { if (optNotif) Glass::Notify(Glass::Icon::WarnTriangle, IM_COL32(255, 159, 10, 255), T("Clipboard", "Буфер обмена"), T("Nothing to paste", "Нечего вставлять"), T("Copy your license key first.", "Сначала скопируйте ключ.")); }
                         else { pasteActive = true; pasteIdx = 0; pasteLen = n; pasteAcc = 0.0f; licKey[0] = 0; licErr = false; Glass::PlaySfx(Glass::Sfx::Tap); }
                     }
                 }
@@ -528,7 +637,7 @@
             {
                 const ImVec2 rp = ImGui::GetCursorScreenPos();
                 float& cT = *stg->GetFloatRef(ImGui::GetID("rem_c"), 0.0f);
-                bool tg = ImGui::InvisibleButton("##rem", ImVec2(142.0f, 26.0f));
+                bool tg = ImGui::InvisibleButton("##rem", ImVec2(176.0f, 26.0f));
                 bool hv = ImGui::IsItemHovered() && !locked;
                 if (tg && !locked) { remember = !remember; Glass::PlaySfx(Glass::Sfx::Tap); }
                 cT += ((remember ? 1.0f : 0.0f) - cT) * sat01(dt * 14.0f);
@@ -542,7 +651,7 @@
                     if (s1 > 0.0f) dl->AddLine(a, ImVec2(a.x + (b.x - a.x) * s1, a.y + (b.y - a.y) * s1), fa(white), 2.0f);
                     if (s2 > 0.0f) dl->AddLine(b, ImVec2(b.x + (c2.x - b.x) * s2, b.y + (c2.y - b.y) * s2), fa(white), 2.0f);
                 }
-                dl->AddText(font_medium, 15.0f, ImVec2(rp.x + 29.0f, rp.y + 3.0f), fa(mix(soft, ink, hv ? 1.0f : cT * 0.6f)), "Remember me");
+                dl->AddText(font_medium, 15.0f, ImVec2(rp.x + 29.0f, rp.y + 3.0f), fa(mix(soft, ink, hv ? 1.0f : cT * 0.6f)), T("Remember me", "Запомнить меня"));
 
                 static float errA = 0.0f;
                 errA += ((licErr ? 1.0f : 0.0f) - errA) * sat01(dt * 12.0f);
@@ -560,9 +669,9 @@
             }
 
             // activate button: label + icon follow the check (Activate -> Checking -> Activated)
-            const char* btnLabel = ver == 0 ? "Activate" : (ver == 1 ? "Checking license..." : "Activated");
+            const char* btnLabel = ver == 0 ? T("Activate", "Активировать") : (ver == 1 ? T("Checking license...", "Проверка лицензии...") : T("Activated", "Активировано"));
             static char lockLbl[40];
-            if (lockT > 0.0f) { std::snprintf(lockLbl, sizeof(lockLbl), "Try again in %ds", (int)std::ceil(lockT)); btnLabel = lockLbl; }
+            if (lockT > 0.0f) { std::snprintf(lockLbl, sizeof(lockLbl), T("Try again in %ds", "Повтор через %d с"), (int)std::ceil(lockT)); btnLabel = lockLbl; }
             ImVec2 bmn, bmx;
             bool go = pbtn("act", ImGui::GetCursorScreenPos(), ImVec2(cwid, 50.0f), lockT <= 0.0f && !pasteActive, bmn, bmx);
             {
@@ -603,7 +712,7 @@
             const bool isDemo = (_stricmp(licKey, kDemoKey) == 0) || (_stricmp(licKey, "LUMIN-DEMO") == 0);
             if (ver == 0 && lockT <= 0.0f && !pasteActive && (go || enter)) {
                 if (licKey[0] == 0) {
-                    licErr = true; shake = 0.7f; std::snprintf(errMsg, sizeof(errMsg), "Enter a license key");
+                    licErr = true; shake = 0.7f; std::snprintf(errMsg, sizeof(errMsg), "%s", T("Enter a license key", "Введите ключ"));
                     Glass::PlaySfx(Glass::Sfx::Error);
                 } else {
                     ver = 1; verT = 0.0f; licErr = false;
@@ -617,8 +726,8 @@
                         Glass::PlaySfx(Glass::Sfx::Success);
                     } else {
                         ver = 0; licErr = true; shake = 1.0f; ++fails;
-                        if (fails >= 3) { lockT = 15.0f; fails = 0; std::snprintf(errMsg, sizeof(errMsg), "Too many attempts"); }
-                        else std::snprintf(errMsg, sizeof(errMsg), "Invalid key - %d left", 3 - fails);
+                        if (fails >= 3) { lockT = 15.0f; fails = 0; std::snprintf(errMsg, sizeof(errMsg), "%s", T("Too many attempts", "Слишком много попыток")); }
+                        else std::snprintf(errMsg, sizeof(errMsg), T("Invalid key - %d left", "Неверный ключ - ещё %d"), 3 - fails);
                         Glass::PlaySfx(Glass::Sfx::Error);
                     }
                 }
@@ -627,7 +736,7 @@
                 if (verT >= 0.7f) {
                     ver = 0; stage = 1; logged_in = true;
                     if (remember) LuminStore::Save(licKey); else LuminStore::Clear();
-                    Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Eclipse", "License activated", "Welcome back.");
+                    if (optNotif) Glass::Notify(Glass::Icon::CheckCircle, IM_COL32(52, 209, 88, 255), "Eclipse", T("License activated", "Лицензия активирована"), T("Welcome back.", "С возвращением."));
                 }
             }
             g_glass_renderer.SetSubmitFade(1.0f);
@@ -684,6 +793,10 @@
             if (stage == 1) {
                 const float leftW = 226.0f;
 
+                const float pgA = sm(pageT);
+                const float savedA = style.Alpha;
+                style.Alpha = savedA * pgA;
+                if (tabSel == 0) {
                 // ---------------- 3D emblem (reacts to the cursor) ----------------
                 {
                     static float spx = 0.0f, spy = 0.0f;
@@ -700,11 +813,11 @@
                 const float rx0 = o.x + leftW + 24.0f + slide;
                 const float rw  = innerW - leftW - 24.0f - 4.0f;
                 const float y0  = o.y + 60.0f;
-                dl->AddText(font_medium, 11.5f, ImVec2(rx0 + 2.0f, y0), fa(soft, 0.9f), "SELECTED PRODUCT");
+                dl->AddText(font_medium, 11.5f, ImVec2(rx0 + 2.0f, y0), fa(soft, 0.9f), T("SELECTED PRODUCT", "ВЫБРАННЫЙ ПРОДУКТ"));
                 dl->AddText(font_semibold, 30.0f, ImVec2(rx0, y0 + 16.0f), fa(ink), kProdName);
 
                 {   // live game indicator (reads the process list every 2 s)
-                    const char* gl = gameUp ? "Game running" : "Game not running";
+                    const char* gl = gameUp ? T("Game running", "Игра запущена") : T("Game not running", "Игра не запущена");
                     const float gw2 = textW(font_medium, 13.0f, gl) + 34.0f;
                     const ImVec2 g0(rx0 + rw - gw2, y0 + 20.0f), g1(rx0 + rw, y0 + 46.0f);
                     const ImU32 gc2 = mix(IM_COL32(150, 153, 168, 255), okc, gameE);
@@ -718,7 +831,8 @@
                 const float rowH = 38.0f, panelY = y0 + 64.0f, panelH = rowH * 4 + 16.0f;
                 dl->AddRectFilled(ImVec2(rx0, panelY), ImVec2(rx0 + rw, panelY + panelH), fa(ink, 0.045f), 16.0f);
                 dl->AddRect(ImVec2(rx0, panelY), ImVec2(rx0 + rw, panelY + panelH), fa(ink, 0.09f), 16.0f, 0, 1.0f);
-                const char* labels[4] = { "Game", "Version", "Status", "Till Expiry" };
+                const char* labels[4] = { T("Game", "Игра"), T("Version", "Версия"), T("Status", "Статус"), T("Till Expiry", "До окончания") };
+                const float rowsKeep = style.Alpha; style.Alpha = rowsKeep * (1.0f - busyE);
                 for (int i = 0; i < 4; ++i) {
                     // skeleton bars shimmer first, then each value reveals with a small stagger
                     const float rs = 0.50f + i * 0.15f;
@@ -747,8 +861,8 @@
                     const char* val = buf;
                     if (i == 0) val = kProdGame;
                     else if (i == 1) val = kProdVer;
-                    else if (i == 2) val = kProdStatus;
-                    else { std::snprintf(buf, sizeof(buf), "%d days", (int)(kDays * e + 0.5f)); }
+                    else if (i == 2) val = T("Available", "Доступно");
+                    else { std::snprintf(buf, sizeof(buf), T("%d days", "%d дн."), (int)(kDays * e + 0.5f)); }
 
                     ImVec2 vs = font_medium->CalcTextSizeA(16.0f, 99999.0f, 0.0f, val);
                     float vx = vr - vs.x + (1.0f - e) * 18.0f;
@@ -773,6 +887,32 @@
                     }
                 }
 
+                style.Alpha = rowsKeep;
+                if (busyE > 0.01f) {   // launch log: lines appear as the (visual) steps complete
+                    const float el = busyPhase == 0 ? busyT : 1.1f + busyT * 2.0f;
+                    static const float lt[5] = { 0.0f, 1.1f, 1.5f, 2.0f, 2.6f };
+                    char pidb[48]; std::snprintf(pidb, sizeof(pidb), T("cs2.exe found (PID %u)", "cs2.exe найден (PID %u)"), gamePid);
+                    const char* lines[5] = { T("Scanning running processes", "Сканирование процессов"), pidb, T("Verifying license", "Проверка лицензии"),
+                                             T("Preparing modules", "Подготовка модулей"), T("Finalizing", "Завершение") };
+                    for (int i = 0; i < 5; ++i) {
+                        if (el < lt[i]) break;
+                        const float ap = sm((el - lt[i]) / 0.25f) * busyE;
+                        const float ly = panelY + 16.0f + i * 29.0f;
+                        const bool done = (i < 4) ? (el >= lt[i + 1]) : (el >= 3.2f);
+                        const ImVec2 ic(rx0 + 28.0f, ly + 9.0f);
+                        if (done) {
+                            dl->AddCircleFilled(ic, 8.0f, fa(pink, 0.9f * ap), 20);
+                            dl->AddLine(ImVec2(ic.x - 3.6f, ic.y + 0.4f), ImVec2(ic.x - 1.0f, ic.y + 3.0f), fa(white, ap), 1.8f);
+                            dl->AddLine(ImVec2(ic.x - 1.0f, ic.y + 3.0f), ImVec2(ic.x + 3.8f, ic.y - 2.8f), fa(white, ap), 1.8f);
+                        } else {
+                            float a0 = tNow * 7.0f;
+                            dl->AddCircle(ic, 7.0f, fa(soft, 0.3f * ap), 20, 2.0f);
+                            dl->PathArcTo(ic, 7.0f, a0, a0 + kPi * 1.2f, 16); dl->PathStroke(fa(pink, ap), 0, 2.2f);
+                        }
+                        dl->AddText(font_medium, 15.0f, ImVec2(rx0 + 48.0f, ly), fa(done ? soft : ink, ap), lines[i]);
+                    }
+                }
+
                 // action button (stub)
                 const ImVec2 abp(rx0, panelY + panelH + 18.0f);
                 const bool actOk = !busy && loadT >= 1.4f && strcmp(kProdStatus, "Available") == 0;
@@ -788,24 +928,26 @@
                     dl->AddCircleFilled(ic, 17.0f, fa(amber, 0.16f * e), 28);
                     dl->AddCircle(ic, 17.0f + pph * 9.0f, fa(amber, (1.0f - pph) * 0.35f * e), 32, 1.4f);
                     Glass::DrawIcon(dl, Glass::Icon::Display, ic, 18.0f, fa(amber, e), 2.0f);
-                    dl->AddText(font_semibold, 14.5f, ImVec2(n0.x + 58.0f, mid - 19.0f), fa(ink, e), "Counter-Strike 2 is not running");
-                    dl->AddText(font_medium, 12.5f, ImVec2(n0.x + 58.0f, mid + 2.0f), fa(soft, e), "Launch the game, then press Retry");
-                    const ImVec2 r0(n1.x - 14.0f - 64.0f, mid - 15.0f), r1(n1.x - 14.0f, mid + 15.0f);
+                    dl->AddText(font_semibold, 14.5f, ImVec2(n0.x + 58.0f, mid - 19.0f), fa(ink, e), T("Counter-Strike 2 is not running", "Counter-Strike 2 не запущена"));
+                    dl->AddText(font_medium, 12.5f, ImVec2(n0.x + 58.0f, mid + 2.0f), fa(soft, e), T("Launch the game, then press Retry", "Запустите игру и нажмите «Повтор»"));
+                    const float rbw = textW(font_medium, 14.0f, T("Retry", "Повтор")) + 28.0f;
+                    const ImVec2 r0(n1.x - 14.0f - rbw, mid - 15.0f), r1(n1.x - 14.0f, mid + 15.0f);
                     ImGui::SetCursorScreenPos(r0);
-                    bool rc = ImGui::InvisibleButton("##retry", ImVec2(64.0f, 30.0f));
+                    bool rc = ImGui::InvisibleButton("##retry", ImVec2(rbw, 30.0f));
                     bool rh = ImGui::IsItemHovered();
                     dl->AddRectFilled(r0, r1, fa(amber, (rh ? 0.30f : 0.18f) * e), 15.0f);
                     dl->AddRect(r0, r1, fa(amber, 0.55f * e), 15.0f, 0, 1.0f);
-                    dl->AddText(font_medium, 14.0f, ImVec2((r0.x + r1.x) * 0.5f - textW(font_medium, 14.0f, "Retry") * 0.5f, mid - 8.0f), fa(amber, e), "Retry");
+                    dl->AddText(font_medium, 14.0f, ImVec2((r0.x + r1.x) * 0.5f - textW(font_medium, 14.0f, T("Retry", "Повтор")) * 0.5f, mid - 8.0f), fa(amber, e), T("Retry", "Повтор"));
                     ImGui::SetCursorScreenPos(abp); ImGui::Dummy(ImVec2(rw, 56.0f));
                     if (rc && e > 0.6f) { notFound = false; busy = true; busyT = 0.0f; busyPhase = 0; }
                 } else if (!busy) {
                     ImVec2 bmn, bmx;
                     bool clicked = pbtn("inj", abp, ImVec2(rw, 52.0f), actOk, bmn, bmx);
-                    const float tw = textW(font_semibold, 17.0f, kActionText);
+                    const char* actLbl = T("Inject", "Запустить");
+                    const float tw = textW(font_semibold, 17.0f, actLbl);
                     const ImU32 tcol = actOk ? fa(white) : fa(soft);
                     Glass::DrawIcon(dl, Glass::Icon::Bolt, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f - 18.0f, (bmn.y + bmx.y) * 0.5f), 18.0f, tcol, 2.2f);
-                    dl->AddText(font_semibold, 17.0f, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f + 6.0f, (bmn.y + bmx.y) * 0.5f - 9.5f), tcol, kActionText);
+                    dl->AddText(font_semibold, 17.0f, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f + 6.0f, (bmn.y + bmx.y) * 0.5f - 9.5f), tcol, actLbl);
                     if (actOk) sweep(dl, bmn, bmx, 3.4f, 0.38f);
                     if (clicked) { busy = true; busyT = 0.0f; busyPhase = 0; notFound = false; }
                 } else if (busyPhase == 0) {
@@ -820,7 +962,7 @@
                         dl->AddRectFilledMultiColor(ImVec2(x + segW * 0.5f, t0.y), ImVec2(x + segW, t1.y), fa(pink, 0.95f), fa(pink, 0.0f), fa(pink, 0.0f), fa(pink, 0.95f));
                         dl->PopClipRect();
                     }
-                    char msg[64]; std::snprintf(msg, sizeof(msg), "Looking for %ls...", kProcName);
+                    char msg[64]; std::snprintf(msg, sizeof(msg), T("Looking for %ls...", "Поиск %ls..."), kProcName);
                     float mw = textW(font_medium, 15.0f, msg);
                     float a0 = tNow * 7.0f; ImVec2 sc(abp.x + (rw - mw) * 0.5f - 14.0f, abp.y + 38.0f);
                     dl->AddCircle(sc, 6.0f, fa(soft, 0.3f), 20, 2.0f);
@@ -828,7 +970,7 @@
                     dl->AddText(font_medium, 15.0f, ImVec2(abp.x + (rw - mw) * 0.5f + 2.0f, abp.y + 30.0f), fa(soft), msg);
                     ImGui::SetCursorScreenPos(abp); ImGui::Dummy(ImVec2(rw, 52.0f));
                     if (busyT >= 1.1f) {
-                        if (procRunning(kProcName)) { busyPhase = 1; busyT = 0.0f; }
+                        if ((gamePid = procRunning(kProcName)) != 0) { busyPhase = 1; busyT = 0.0f; }
                         else { busy = false; notFound = true; nfE = 0.0f; }
                     }
                 } else {
@@ -844,30 +986,149 @@
                         dl->AddRectFilledMultiColor(t0, t1, fa(amber), fa(pink), fa(violet), fa(pink));
                         dl->PopClipRect();
                     }
-                    const char* msg = pr < 0.25f ? "Process found" : (pr < 0.55f ? "Checking license..." : (pr < 0.85f ? "Preparing..." : "Almost done..."));
+                    const char* msg = pr < 0.25f ? T("Process found", "Процесс найден") : (pr < 0.55f ? T("Checking license...", "Проверка лицензии...") : (pr < 0.85f ? T("Preparing...", "Подготовка...") : T("Almost done...", "Почти готово...")));
                     dl->AddText(font_medium, 15.0f, ImVec2(abp.x + (rw - textW(font_medium, 15.0f, msg)) * 0.5f, abp.y + 30.0f), fa(soft), msg);
                     ImGui::SetCursorScreenPos(abp); ImGui::Dummy(ImVec2(rw, 52.0f));
                     if (busyT >= 1.1f) { busy = false; busyPhase = 0; stage = 2; okT = 0.0f; Glass::PlaySfx(Glass::Sfx::Success); }
                 }
-                {   // version tag, bottom right
-                    char vb[48]; std::snprintf(vb, sizeof(vb), "Eclipse  %s", kVersion);
-                    dl->AddText(font_medium, 12.5f, ImVec2(o.x + innerW - textW(font_medium, 12.5f, vb) - 4.0f, o.y + innerH - 22.0f), fa(soft, 0.7f), vb);
+                } else {
+                    // ---------------- settings / what's new pages ----------------
+                    const float px0 = o.x + 6.0f + (1.0f - pgA) * 16.0f, pw = innerW - 12.0f, py0 = o.y + 56.0f;
+                    auto chip = [&](const char* id, float x, float mid, const char* label, bool sel) {
+                        const float w = textW(font_medium, 14.0f, label) + 26.0f, h = 28.0f;
+                        ImGui::SetCursorScreenPos(ImVec2(x, mid - h * 0.5f));
+                        bool clk = ImGui::InvisibleButton(id, ImVec2(w, h));
+                        bool hv = ImGui::IsItemHovered();
+                        ImVec2 a0(x, mid - h * 0.5f), a1(x + w, mid + h * 0.5f);
+                        dl->AddRectFilled(a0, a1, sel ? fa(pink, 0.28f) : fa(ink, hv ? 0.10f : 0.05f), 14.0f);
+                        dl->AddRect(a0, a1, sel ? fa(pink, 0.85f) : fa(ink, 0.12f), 14.0f, 0, 1.2f);
+                        dl->AddText(font_medium, 14.0f, ImVec2(x + 13.0f, mid - 8.0f), sel ? fa(ink) : fa(soft), label);
+                        return clk;
+                    };
+                    auto chipsRight = [&](const char* idp, float rightEdge, float mid, const char* const* labels2, int n, int& value) {
+                        float total = 0.0f;
+                        for (int i = 0; i < n; ++i) total += textW(font_medium, 14.0f, labels2[i]) + 26.0f;
+                        total += 8.0f * (n - 1);
+                        float x = rightEdge - total; bool changed = false;
+                        for (int i = 0; i < n; ++i) {
+                            char id[24]; std::snprintf(id, sizeof(id), "%s%d", idp, i);
+                            if (chip(id, x, mid, labels2[i], value == i)) { if (value != i) { value = i; changed = true; } }
+                            x += textW(font_medium, 14.0f, labels2[i]) + 26.0f + 8.0f;
+                        }
+                        return changed;
+                    };
+                    auto toggle = [&](const char* id, float rightEdge, float mid, bool& v) {
+                        const float w = 44.0f, h = 24.0f;
+                        ImVec2 a0(rightEdge - w, mid - h * 0.5f), a1(rightEdge, mid + h * 0.5f);
+                        ImGui::SetCursorScreenPos(a0);
+                        bool clk = ImGui::InvisibleButton(id, ImVec2(w, h));
+                        float& tv = *ImGui::GetStateStorage()->GetFloatRef(ImGui::GetID("tg"), v ? 1.0f : 0.0f);
+                        tv += ((v ? 1.0f : 0.0f) - tv) * sat01(dt * 14.0f);
+                        dl->AddRectFilled(a0, a1, mix(mulA(ink, 0.16f), pink, tv), 12.0f);
+                        dl->AddRect(a0, a1, fa(ink, 0.10f), 12.0f, 0, 1.0f);
+                        float kx = a0.x + 12.0f + (w - 24.0f) * tv;
+                        dl->AddCircleFilled(ImVec2(kx, mid + 1.0f), 9.5f, fa(IM_COL32(0, 0, 0, 255), 0.18f), 20);
+                        dl->AddCircleFilled(ImVec2(kx, mid), 9.0f, fa(white), 20);
+                        if (clk) v = !v;
+                        return clk;
+                    };
+                    if (tabSel == 1) {
+                        dl->AddText(font_semibold, 24.0f, ImVec2(px0, py0), fa(ink), T("Settings", "Настройки"));
+                        const float rowH2 = 44.0f, plY = py0 + 38.0f, plH = rowH2 * 6.0f + 12.0f;
+                        dl->AddRectFilled(ImVec2(px0, plY), ImVec2(px0 + pw, plY + plH), fa(ink, 0.045f), 16.0f);
+                        dl->AddRect(ImVec2(px0, plY), ImVec2(px0 + pw, plY + plH), fa(ink, 0.09f), 16.0f, 0, 1.0f);
+                        const char* rl[6] = { T("Language", "Язык"), T("Accent color", "Цвет акцента"), T("Emblem", "Эмблема"),
+                                              T("Launch with Windows", "Запуск с Windows"), T("Minimize to tray", "Сворачивать в трей"), T("Notifications", "Уведомления") };
+                        const float redge = px0 + pw - 18.0f;
+                        for (int r = 0; r < 6; ++r) {
+                            const float ry = plY + 6.0f + r * rowH2, mid = ry + rowH2 * 0.5f;
+                            if (r > 0) dl->AddLine(ImVec2(px0 + 18.0f, ry), ImVec2(px0 + pw - 18.0f, ry), fa(ink, 0.06f), 1.0f);
+                            dl->AddText(font_medium, 16.0f, ImVec2(px0 + 20.0f, mid - 9.0f), fa(ink), rl[r]);
+                            ImGui::PushID(r);
+                            if (r == 0) {
+                                const char* ll[2] = { "English", "Русский" };
+                                if (chipsRight("lg", redge, mid, ll, 2, lang)) LuminStore::SaveInt(L"Lang", lang);
+                            } else if (r == 1) {
+                                for (int i = 2; i >= 0; --i) {
+                                    const ImVec2 sc2(redge - 14.0f - (2 - i) * 38.0f, mid);
+                                    ImGui::SetCursorScreenPos(ImVec2(sc2.x - 15.0f, sc2.y - 15.0f));
+                                    char id[16]; std::snprintf(id, sizeof(id), "th%d", i);
+                                    bool clk = ImGui::InvisibleButton(id, ImVec2(30.0f, 30.0f));
+                                    bool hv = ImGui::IsItemHovered();
+                                    dl->AddCircleFilled(sc2, hv ? 12.5f : 11.5f, fa(thA[i]), 24);
+                                    dl->AddCircleFilled(ImVec2(sc2.x, sc2.y + 5.0f), 6.0f, fa(thB[i], 0.9f), 16);
+                                    if (themeSel == i) dl->AddCircle(sc2, 16.0f, fa(ink, 0.9f), 28, 2.0f);
+                                    if (clk && themeSel != i) { themeSel = i; LuminStore::SaveInt(L"Theme", themeSel); }
+                                }
+                            } else if (r == 2) {
+                                const char* el2[3] = { T("Star", "Звезда"), T("Anarchy", "Анархия"), T("Crystal", "Кристалл") };
+                                if (chipsRight("em", redge, mid, el2, 3, emblemSel)) LuminStore::SaveInt(L"Emblem", emblemSel);
+                            } else if (r == 3) { if (toggle("t3", redge, mid, optAuto)) LuminStore::SaveInt(L"OptAuto", optAuto ? 1 : 0); }
+                            else if (r == 4)   { if (toggle("t4", redge, mid, optTray)) LuminStore::SaveInt(L"OptTray", optTray ? 1 : 0); }
+                            else               { if (toggle("t5", redge, mid, optNotif)) LuminStore::SaveInt(L"OptNotif", optNotif ? 1 : 0); }
+                            ImGui::PopID();
+                        }
+                    } else {
+                        dl->AddText(font_semibold, 24.0f, ImVec2(px0, py0), fa(ink), T("What's new", "Что нового"));
+                        struct Ver { const char* v; const char* en[3]; const char* ru[3]; };
+                        static const Ver vers[3] = {
+                            { "v2.0.0", { "Chrome emblems and accent themes", "Live game status and process check", "Settings, languages and a launch log" },
+                                        { "Хромированные эмблемы и темы", "Статус игры и проверка процесса", "Настройки, языки и журнал запуска" } },
+                            { "v1.3.0", { "Paste button and attempt limit", "Skeleton loading, smooth transitions", "Online indicator" },
+                                        { "Кнопка вставки и лимит попыток", "Скелетоны и плавные переходы", "Индикатор онлайна" } },
+                            { "v1.2.0", { "Remember me and Dynamic Island", "Profile menu with theme switch", "Custom icons" },
+                                        { "Запомнить меня и Dynamic Island", "Меню профиля со сменой темы", "Собственные иконки" } },
+                        };
+                        float y = py0 + 40.0f;
+                        for (int i = 0; i < 3; ++i) {
+                            const float ap = eo3((pageT - i * 0.12f) / 0.6f);
+                            const float tw2 = textW(font_semibold, 14.0f, vers[i].v) + 20.0f;
+                            dl->AddRectFilled(ImVec2(px0, y), ImVec2(px0 + tw2, y + 24.0f), fa(pink, (i == 0 ? 0.28f : 0.12f) * ap), 12.0f);
+                            dl->AddText(font_semibold, 14.0f, ImVec2(px0 + 10.0f, y + 3.0f), fa(i == 0 ? ink : soft, ap), vers[i].v);
+                            if (i == 0) dl->AddText(font_medium, 13.0f, ImVec2(px0 + tw2 + 10.0f, y + 4.0f), fa(pink, ap), T("latest", "последняя"));
+                            for (int k = 0; k < 3; ++k) {
+                                const float by = y + 34.0f + k * 20.0f;
+                                dl->AddCircleFilled(ImVec2(px0 + 6.0f, by + 8.0f), 2.2f, fa(pink, 0.8f * ap), 10);
+                                dl->AddText(font_medium, 14.5f, ImVec2(px0 + 18.0f + (1.0f - ap) * 10.0f, by), fa(soft, ap), lang == 1 ? vers[i].ru[k] : vers[i].en[k]);
+                            }
+                            y += 34.0f + 3 * 20.0f + 10.0f;
+                        }
+                    }
+                }
+                style.Alpha = savedA;
+
+                {   // bottom-right tabs: product / settings / what's new
+                    static const Glass::Icon tabIcons[3] = { Glass::Icon::Cube, Glass::Icon::Gear, Glass::Icon::Spark };
+                    for (int i = 0; i < 3; ++i) {
+                        const ImVec2 tc(o.x + innerW - 21.0f - (2 - i) * 42.0f, o.y + innerH - 34.0f);
+                        ImGui::SetCursorScreenPos(ImVec2(tc.x - 17.0f, tc.y - 17.0f));
+                        ImGui::PushID(100 + i);
+                        bool clk = ImGui::InvisibleButton("##tab", ImVec2(34.0f, 34.0f));
+                        bool hv = ImGui::IsItemHovered();
+                        ImGui::PopID();
+                        const bool act = (tabSel == i);
+                        dl->AddCircleFilled(tc, 17.0f, act ? fa(pink, 0.24f) : fa(ink, hv ? 0.10f : 0.05f), 28);
+                        dl->AddCircle(tc, 17.0f, act ? fa(pink, 0.85f) : fa(ink, 0.12f), 28, 1.2f);
+                        Glass::DrawIcon(dl, tabIcons[i], tc, 16.0f, act ? fa(ink) : fa(soft), 1.8f);
+                        if (clk && tabSel != i) tabSel = i;
+                    }
                 }
 
                 // ---------------- profile row (bottom-left): theme + sign out only ----------------
                 {
+                    char tagBuf[24]; std::snprintf(tagBuf, sizeof(tagBuf), T("%d days", "%d дн."), kDays);
                     float pbH = 56.0f, pbX = o.x + 4.0f - slide, pbW = 188.0f;
                     float pbY = o.y + innerH - pbH - 6.0f;
-                    Glass::ProfileAction pa = Glass::ProfileMenu("acct", kUserName, kUserTag, "U", IM_COL32(232, 38, 66, 255),
+                    Glass::ProfileAction pa = Glass::ProfileMenu("acct", kUserName, tagBuf, "U", pink,
                                                                  pbX, pbY, pbW, &profStatus, &profTheme, fade, false);
                     if (pa == Glass::ProfileAction::SignOut) {
-                        stage = 0; logged_in = false; licKey[0] = 0; licErr = false; ver = 0; busy = false; busyPhase = 0; autoFocus = false;
+                        stage = 0; logged_in = false; licKey[0] = 0; licErr = false; ver = 0; busy = false; busyPhase = 0; autoFocus = false; tabSel = 0;
                         islandClock = 0.0f; islandE = 0.0f; islandAppear = 0.0f; islandState = 0; islandProg = 0.0f;
                         islandGone = false; islandHide = false;
                         LuminStore::Clear();
                     } else if (pa == Glass::ProfileAction::ThemeChanged) {
                         appearance = (profTheme == 1) ? 1 : 0;      // 0 dark, 1 light
-                        Glass::Notify(Glass::Icon::Display, IM_COL32(94, 92, 230, 255), "Appearance", profTheme == 1 ? "Light" : "Dark", "Theme updated.");
+                        if (optNotif) Glass::Notify(Glass::Icon::Display, IM_COL32(94, 92, 230, 255), "Appearance", profTheme == 1 ? "Light" : "Dark", "Theme updated.");
                     }
                 }
 
@@ -906,7 +1167,7 @@
                         float k = cA * ap;
                         fd->AddCircleFilled(ImVec2(pmin.x + 18.0f, mid), 9.5f, fa(pink, k), 20);
                         Glass::DrawIcon(fd, Glass::Icon::Download, ImVec2(pmin.x + 18.0f, mid), 11.0f, fa(white, k), 2.0f);
-                        fd->AddText(font_medium, 13.5f, ImVec2(pmin.x + 35.0f, mid - 8.0f), fa(white, k), "Update available");
+                        fd->AddText(font_medium, 13.5f, ImVec2(pmin.x + 35.0f, mid - 8.0f), fa(white, k), T("Update available", "Есть обновление"));
                         float ph = std::fmod(tNow, 1.6f) / 1.6f;
                         ImVec2 dc(pmax.x - 14.0f, mid);
                         fd->AddCircleFilled(dc, 3.2f, fa(pink, k), 12);
@@ -919,16 +1180,16 @@
                         fd->AddCircleFilled(ic, 17.0f, fa(pink, k), 28);
                         Glass::DrawIcon(fd, islandState == 2 ? Glass::Icon::Check : Glass::Icon::Download, ic, 17.0f, fa(white, k), 2.2f);
                         const float tx = pmin.x + 14.0f + 34.0f + 12.0f;
-                        const char* title = islandState == 0 ? "Update available" : (islandState == 1 ? "Updating..." : "Update installed");
+                        const char* title = islandState == 0 ? T("Update available", "Доступно обновление") : (islandState == 1 ? T("Updating...", "Обновление...") : T("Update installed", "Обновление установлено"));
                         fd->AddText(font_semibold, 15.5f, ImVec2(tx, mid - 21.0f), fa(white, k), title);
-                        ImVec2 bmin(pmax.x - 14.0f - 74.0f, mid - 15.0f), bmax(pmax.x - 14.0f, mid + 15.0f);
+                        ImVec2 bmin(pmax.x - 14.0f - 92.0f, mid - 15.0f), bmax(pmax.x - 14.0f, mid + 15.0f);
                         if (islandState == 0) {
-                            char sub[64]; std::snprintf(sub, sizeof(sub), "Eclipse %s is ready", kVersion);
+                            char sub[64]; std::snprintf(sub, sizeof(sub), T("Eclipse %s is ready", "Eclipse %s готов"), kVersion);
                             fd->AddText(font_medium, 12.5f, ImVec2(tx, mid + 2.0f), fa(IM_COL32(150, 153, 168, 255), k), sub);
                             bool hovB = ImGui::IsMouseHoveringRect(bmin, bmax);
                             fd->AddRectFilled(bmin, bmax, fa(hovB ? IM_COL32(246, 128, 150, 255) : pink, k), 15.0f);
-                            float iw = textW(font_medium, 14.0f, "Install");
-                            fd->AddText(font_medium, 14.0f, ImVec2((bmin.x + bmax.x) * 0.5f - iw * 0.5f, mid - 8.0f), fa(white, k), "Install");
+                            float iw = textW(font_medium, 14.0f, T("Install", "Установить"));
+                            fd->AddText(font_medium, 14.0f, ImVec2((bmin.x + bmax.x) * 0.5f - iw * 0.5f, mid - 8.0f), fa(white, k), T("Install", "Установить"));
                             if (hovB) gUiCapture = true;
                             if (hovB && e > 0.85f && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                                 islandState = 1; islandProg = 0.0f;
@@ -945,7 +1206,7 @@
                             fd->AddText(font_medium, 14.0f, ImVec2(pmax.x - 16.0f - pw, mid - 8.0f), fa(IM_COL32(200, 202, 212, 255), k), pct);
                             if (islandProg >= 1.0f) { islandState = 2; islandDoneT = 0.0f; Glass::PlaySfx(Glass::Sfx::Success); }
                         } else {
-                            fd->AddText(font_medium, 12.5f, ImVec2(tx, mid + 2.0f), fa(IM_COL32(150, 153, 168, 255), k), "You are up to date");
+                            fd->AddText(font_medium, 12.5f, ImVec2(tx, mid + 2.0f), fa(IM_COL32(150, 153, 168, 255), k), T("You are up to date", "У вас последняя версия"));
                             islandDoneT += dt;
                             if (islandDoneT > 1.4f) islandHide = true;
                         }
@@ -960,19 +1221,19 @@
                 const float R = 30.0f;
 
                 for (int k = 0; k < 5; ++k)
-                    dl->AddCircleFilled(cc, R + 4.0f + k * 8.0f, fa(okc, 0.07f * (1.0f - k / 5.0f) * eo3(okT / 0.6f)), 40);
+                    dl->AddCircleFilled(cc, R + 4.0f + k * 8.0f, fa(pink, 0.07f * (1.0f - k / 5.0f) * eo3(okT / 0.6f)), 40);
                 float rp = eo3(okT / 0.6f);
                 dl->AddCircle(cc, R, fa(ink, 0.12f), 64, 3.0f);
                 if (rp > 0.004f) {
                     dl->PathArcTo(cc, R, -kPi * 0.5f, -kPi * 0.5f + 2.0f * kPi * rp, 64);
-                    dl->PathStroke(fa(okc), 0, 3.2f);
+                    dl->PathStroke(fa(pink), 0, 3.2f);
                 }
                 {   // check mark, two strokes
                     float q = eo3((okT - 0.5f) / 0.4f);
                     ImVec2 a(cc.x - 11.0f, cc.y + 1.0f), b(cc.x - 3.0f, cc.y + 9.0f), c2(cc.x + 12.0f, cc.y - 8.0f);
                     float s1 = sat01(q / 0.4f), s2 = sat01((q - 0.4f) / 0.6f);
-                    if (s1 > 0.0f) dl->AddLine(a, ImVec2(a.x + (b.x - a.x) * s1, a.y + (b.y - a.y) * s1), fa(okc), 3.6f);
-                    if (s2 > 0.0f) dl->AddLine(b, ImVec2(b.x + (c2.x - b.x) * s2, b.y + (c2.y - b.y) * s2), fa(okc), 3.6f);
+                    if (s1 > 0.0f) dl->AddLine(a, ImVec2(a.x + (b.x - a.x) * s1, a.y + (b.y - a.y) * s1), fa(pink), 3.6f);
+                    if (s2 > 0.0f) dl->AddLine(b, ImVec2(b.x + (c2.x - b.x) * s2, b.y + (c2.y - b.y) * s2), fa(pink), 3.6f);
                 }
                 {   // particles
                     float tt = sat01((okT - 0.55f) / 1.0f);
@@ -982,7 +1243,7 @@
                             float spd = 46.0f + (float)((i * 7) % 5) * 12.0f;
                             float rr = R + 8.0f + eo3(tt) * spd;
                             ImVec2 pp(cc.x + std::cos(ang) * rr, cc.y + std::sin(ang) * rr);
-                            dl->AddCircleFilled(pp, 1.0f + 2.2f * (1.0f - tt), fa((i % 3 == 0) ? pink : okc, 1.0f - tt), 12);
+                            dl->AddCircleFilled(pp, 1.0f + 2.2f * (1.0f - tt), fa((i % 3 == 0) ? pink : pink, 1.0f - tt), 12);
                         }
                     }
                 }
@@ -990,11 +1251,11 @@
                 float tin = eo3((okT - 0.35f) / 0.5f);
                 ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + innerH * 0.5f - 44.0f + (1.0f - tin) * 12.0f));
                 ImGui::PushFont(font_semibold);
-                lumin_center("Successfully!", fa(ink, tin));
+                lumin_center(T("Successfully!", "Успешно!"), fa(ink, tin));
                 ImGui::PopFont();
                 ImGui::Dummy(ImVec2(0, 8));
-                lumin_center("Now you can go back to the game and have fun!", fa(soft, tin));
-                lumin_center("This window will close automatically.", fa(soft, tin));
+                lumin_center(T("Now you can go back to the game and have fun!", "Теперь можно вернуться в игру."), fa(soft, tin));
+                lumin_center(T("This window will close automatically.", "Это окно закроется автоматически."), fa(soft, tin));
 
                 // countdown hairline
                 {
