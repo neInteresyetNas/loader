@@ -16,7 +16,7 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Build Lumin
+      - name: Build Eclipse
         shell: cmd
         run: >
           msbuild examples\example_win32_directx11\example_win32_directx11.vcxproj
@@ -31,14 +31,15 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $exe = Get-ChildItem -Recurse -Include Lumin.exe,example_win32_directx11.exe -Path examples |
-                 Where-Object { $_.FullName -match 'Release' } | Select-Object -First 1
-          if (-not $exe) { Get-ChildItem -Recurse -Filter *.exe -Path examples | ForEach-Object FullName; throw "exe not found" }
+          $names = @('Eclipse.exe','Lumin.exe','example_win32_directx11.exe')
+          $exe = Get-ChildItem -Path examples -Recurse -Filter *.exe |
+                 Where-Object { $names -contains $_.Name -and $_.FullName -match 'Release' } | Select-Object -First 1
+          if (-not $exe) { throw "exe not found" }
           Write-Host "Found: $($exe.FullName)"
-          Copy-Item $exe.FullName dist\Lumin.exe
+          Copy-Item $exe.FullName dist\Eclipse.exe
 
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
-          name: Lumin-win-x64
+          name: Eclipse-win-x64
           path: dist
