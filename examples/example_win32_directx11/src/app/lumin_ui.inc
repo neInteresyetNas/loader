@@ -7,11 +7,12 @@
 {
     // ---- editable content --------------------------------------------------------------------
     static const char* kBrand      = "ECLIPSE";
-    static const char* kProdName   = "RAGE:MP";
-    static const char* kProdGame   = "RAGE Multiplayer";
+    static const char* kProdName   = "CS2";
+    static const char* kProdGame   = "Counter-Strike 2";
     static const char* kProdVer    = "release";
     static const char* kProdStatus = "Available";
     static const ImU32 kStatusCol  = IM_COL32(110, 231, 130, 255);
+    static const wchar_t* kProcName = L"cs2.exe";       // process the loader looks for (visual demo: nothing is injected)
     static const int   kDays       = 29;
     static const char* kUserName   = "username";
     static const char* kUserTag    = "29 days";
@@ -27,7 +28,7 @@
     static int   ver = 0;                   // license check: 0 idle, 1 checking, 2 accepted
     static float verT = 0.0f;
     static float shake = 0.0f;
-    static bool  busy = false; static float busyT = 0.0f;
+    static bool  busy = false; static float busyT = 0.0f; static int busyPhase = 0; static float failT = 0.0f;
     static float okT = 0.0f;
     static int   lastStage = 0; static float subT = 0.0f;
     static float loadT = 0.0f;              // skeleton -> values reveal
@@ -175,10 +176,13 @@
             const ImVec2 bc(sc.x + px * 9.0f, sc.y + py * 9.0f + std::sin(tNow * 1.7f) * 2.0f);
             const float s = Rs * 0.44f;
             for (int k = 0; k < 4; ++k) d->AddCircleFilled(bc, s * (0.9f + k * 0.45f), mulA(pink, 0.075f * (1.0f - k / 4.0f) * al), 32);
-            static const float bx[6] = { 0.18f, -0.55f, -0.02f, -0.20f, 0.55f, 0.04f };
-            static const float by[6] = { -1.00f, 0.12f, 0.12f, 1.00f, -0.18f, -0.18f };
-            for (int k = 0; k < 6; ++k) d->PathLineTo(ImVec2(bc.x + bx[k] * s, bc.y + by[k] * s));
-            d->PathFillConcave(mulA(mix(white, IM_COL32(255, 205, 220, 255), 0.45f), 0.97f * al));
+            const ImU32 cc2 = mulA(mix(white, IM_COL32(255, 205, 220, 255), 0.35f), 0.97f * al);
+            d->AddCircle(bc, s * 0.62f, cc2, 40, 2.8f);
+            for (int k = 0; k < 4; ++k) {
+                float ax = std::cos(k * kPi * 0.5f), ay = std::sin(k * kPi * 0.5f);
+                d->AddLine(ImVec2(bc.x + ax * s * 0.36f, bc.y + ay * s * 0.36f), ImVec2(bc.x + ax * s * 1.0f, bc.y + ay * s * 1.0f), cc2, 2.8f);
+            }
+            d->AddCircleFilled(bc, 2.6f, cc2, 12);
         }
         ringHalf(0.0f, kPi, 0.95f);                              // in front of the orb
         if (bs >= 0.0f) { ImVec2 b = orb(ba); d->AddCircleFilled(b, 10.0f, mulA(amber, 0.18f * al), 16); d->AddCircleFilled(b, 3.8f, mulA(white, 0.95f * al), 12); }
@@ -263,6 +267,18 @@
         d->PopClipRect();
     };
 
+    // is a process with this exe name running? (read-only snapshot of the process list)
+    auto procRunning = [&](const wchar_t* exe) {
+        bool found = false;
+        HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            PROCESSENTRY32W pe; pe.dwSize = sizeof(pe);
+            if (::Process32FirstW(snap, &pe)) do { if (::_wcsicmp(pe.szExeFile, exe) == 0) { found = true; break; } } while (::Process32NextW(snap, &pe));
+            ::CloseHandle(snap);
+        }
+        return found;
+    };
+
     // ---- state machines ----------------------------------------------------------------------
     if (introT < 4.0f) introT += dt;
     // click / Enter skips to the grow-into-window part of the intro
@@ -296,6 +312,7 @@
     loadT += dt * 1.25f; if (loadT > 2.0f) loadT = 2.0f;
 
     if (lockT > 0.0f) { lockT -= dt; if (lockT <= 0.0f) { lockT = 0.0f; licErr = false; } }
+    if (failT > 0.0f) failT -= dt * 0.35f;
     pastedFlash -= dt * 2.0f; if (pastedFlash < 0.0f) pastedFlash = 0.0f;
     if (pasteActive) {      // clipboard text "types itself" into the field
         pasteAcc += dt;
@@ -775,12 +792,40 @@
                     bool clicked = pbtn("inj", abp, ImVec2(rw, 52.0f), actOk, bmn, bmx);
                     const float tw = textW(font_semibold, 17.0f, kActionText);
                     const ImU32 tcol = actOk ? fa(white) : fa(soft);
-                    Glass::DrawIcon(dl, Glass::Icon::Bolt, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f - 18.0f, (bmn.y + bmx.y) * 0.5f), 18.0f, tcol, 2.2f);
+                    Glass::DrawIcon(dl, Glass::Icon::Crosshairs, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f - 18.0f, (bmn.y + bmx.y) * 0.5f), 18.0f, tcol, 2.2f);
                     dl->AddText(font_semibold, 17.0f, ImVec2((bmn.x + bmx.x) * 0.5f - tw * 0.5f + 6.0f, (bmn.y + bmx.y) * 0.5f - 9.5f), tcol, kActionText);
                     if (actOk) sweep(dl, bmn, bmx, 3.4f, 0.38f);
-                    if (clicked) { busy = true; busyT = 0.0f; Glass::PlaySfx(Glass::Sfx::Tap); }
+                    if (clicked) { busy = true; busyT = 0.0f; busyPhase = 0; failT = 0.0f; Glass::PlaySfx(Glass::Sfx::Tap); }
+                } else if (busyPhase == 0) {
+                    // step 1: look for the game process (spinner + sweep while "scanning")
+                    busyT += dt;
+                    const ImVec2 t0(abp.x, abp.y + 12.0f), t1(abp.x + rw, abp.y + 22.0f);
+                    dl->AddRectFilled(t0, t1, fa(ink, 0.10f), 5.0f);
+                    {
+                        float u = std::fmod(tNow * 0.9f, 1.0f), segW = rw * 0.30f, x = t0.x - segW + (rw + segW) * u;
+                        dl->PushClipRect(t0, t1, true);
+                        dl->AddRectFilledMultiColor(ImVec2(x, t0.y), ImVec2(x + segW * 0.5f, t1.y), fa(pink, 0.0f), fa(pink, 0.95f), fa(pink, 0.95f), fa(pink, 0.0f));
+                        dl->AddRectFilledMultiColor(ImVec2(x + segW * 0.5f, t0.y), ImVec2(x + segW, t1.y), fa(pink, 0.95f), fa(pink, 0.0f), fa(pink, 0.0f), fa(pink, 0.95f));
+                        dl->PopClipRect();
+                    }
+                    char msg[64]; std::snprintf(msg, sizeof(msg), "Looking for %ls...", kProcName);
+                    float mw = textW(font_medium, 15.0f, msg);
+                    float a0 = tNow * 7.0f; ImVec2 sc(abp.x + (rw - mw) * 0.5f - 14.0f, abp.y + 38.0f);
+                    dl->AddCircle(sc, 6.0f, fa(soft, 0.3f), 20, 2.0f);
+                    dl->PathArcTo(sc, 6.0f, a0, a0 + kPi * 1.2f, 16); dl->PathStroke(fa(pink), 0, 2.2f);
+                    dl->AddText(font_medium, 15.0f, ImVec2(abp.x + (rw - mw) * 0.5f + 2.0f, abp.y + 30.0f), fa(soft), msg);
+                    ImGui::SetCursorScreenPos(abp); ImGui::Dummy(ImVec2(rw, 52.0f));
+                    if (busyT >= 1.1f) {
+                        if (procRunning(kProcName)) { busyPhase = 1; busyT = 0.0f; }
+                        else {
+                            busy = false; failT = 1.0f; shake = 0.5f;
+                            Glass::PlaySfx(Glass::Sfx::Error);
+                            Glass::Notify(Glass::Icon::WarnTriangle, IM_COL32(255, 159, 10, 255), "Game not found", "Counter-Strike 2 is not running", "Start the game, then press Inject again.");
+                        }
+                    }
                 } else {
-                    busyT += dt * 0.55f;
+                    // step 2: process found -> loading animation (visual only)
+                    busyT += dt * 0.5f;
                     float pr = busyT > 1.0f ? 1.0f : busyT;
                     const ImVec2 t0(abp.x, abp.y + 12.0f), t1(abp.x + rw, abp.y + 22.0f);
                     dl->AddRectFilled(t0, t1, fa(ink, 0.10f), 5.0f);
@@ -791,10 +836,14 @@
                         dl->AddRectFilledMultiColor(t0, t1, fa(amber), fa(pink), fa(violet), fa(pink));
                         dl->PopClipRect();
                     }
-                    const char* msg = pr < 0.34f ? "Checking license..." : (pr < 0.72f ? "Preparing..." : "Almost done...");
+                    const char* msg = pr < 0.25f ? "Process found" : (pr < 0.55f ? "Checking license..." : (pr < 0.85f ? "Preparing..." : "Almost done..."));
                     dl->AddText(font_medium, 15.0f, ImVec2(abp.x + (rw - textW(font_medium, 15.0f, msg)) * 0.5f, abp.y + 30.0f), fa(soft), msg);
                     ImGui::SetCursorScreenPos(abp); ImGui::Dummy(ImVec2(rw, 52.0f));
-                    if (busyT >= 1.1f) { busy = false; stage = 2; okT = 0.0f; Glass::PlaySfx(Glass::Sfx::Success); }
+                    if (busyT >= 1.1f) { busy = false; busyPhase = 0; stage = 2; okT = 0.0f; Glass::PlaySfx(Glass::Sfx::Success); }
+                }
+                if (failT > 0.01f && !busy) {
+                    char hb[64]; std::snprintf(hb, sizeof(hb), "%ls not found - start the game first", kProcName);
+                    dl->AddText(font_medium, 13.5f, ImVec2(abp.x + (rw - textW(font_medium, 13.5f, hb)) * 0.5f, abp.y + 60.0f), fa(IM_COL32(255, 120, 120, 255), sat01(failT * 2.0f)), hb);
                 }
                 {   // version tag, bottom right
                     char vb[48]; std::snprintf(vb, sizeof(vb), "Eclipse  %s", kVersion);
@@ -808,7 +857,7 @@
                     Glass::ProfileAction pa = Glass::ProfileMenu("acct", kUserName, kUserTag, "U", IM_COL32(240, 92, 128, 255),
                                                                  pbX, pbY, pbW, &profStatus, &profTheme, fade, false);
                     if (pa == Glass::ProfileAction::SignOut) {
-                        stage = 0; logged_in = false; licKey[0] = 0; licErr = false; ver = 0; busy = false; autoFocus = false;
+                        stage = 0; logged_in = false; licKey[0] = 0; licErr = false; ver = 0; busy = false; busyPhase = 0; autoFocus = false;
                         islandClock = 0.0f; islandE = 0.0f; islandAppear = 0.0f; islandState = 0; islandProg = 0.0f;
                         islandGone = false; islandHide = false;
                         LuminStore::Clear();

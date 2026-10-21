@@ -11,6 +11,7 @@
 #include <d3d11.h>
 #include <tchar.h>
 #include <dwmapi.h>
+#include <tlhelp32.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
